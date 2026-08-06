@@ -1,0 +1,622 @@
+    :root {
+      --bg: #f6f7f8;
+      --card: #ffffff;
+      --ink: #1e2a2f;
+      --muted: #57666d;
+      --line: rgba(30,42,47,0.12);
+      --sunken: rgba(30,42,47,0.04);
+
+      /* 价格方向：红涨绿跌（中式习惯） */
+      --up: #c61f1f;
+      --down: #117a4b;
+
+      /* 状态语义：绿正常 / 红错误 / 琥珀警告 / 蓝信息（与价格方向解耦） */
+      --ok: #117a4b;
+      --err: #c61f1f;
+      --warn: #ad5d22;
+      --info: #125fa0;
+
+      /* 品牌强调（买入、激活等领域色） */
+      --accent: #c61f1f;
+
+      --serif: Georgia, "Songti SC", "Source Han Serif SC", serif;
+      --mono: "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+	    body {
+	      margin: 0;
+	      font-family: -apple-system, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+	      color: var(--ink);
+	      background: var(--bg);
+	    }
+
+	    @media (prefers-color-scheme: dark) {
+	      :root {
+	        --bg: #14181b;
+	        --card: #1e2429;
+	        --ink: #e6ebed;
+	        --muted: #9aa7ad;
+	        --line: rgba(230,235,237,0.14);
+	        --sunken: rgba(230,235,237,0.05);
+	        --up: #ff6b6b;
+	        --down: #35c281;
+	        --ok: #35c281;
+	        --err: #ff6b6b;
+	        --warn: #e0a458;
+	        --info: #5aa7e6;
+	        --accent: #ff6b6b;
+	      }
+	    }
+    .wrap {
+      width: min(96vw, 1600px);
+      margin: 0 auto;
+      padding: clamp(14px, 2vw, 24px);
+    }
+	    .hero, .card {
+	      background: var(--card);
+	      border: 1px solid var(--line);
+	      border-radius: 8px;
+	      box-shadow: 0 1px 2px rgba(30,42,47,0.05);
+	    }
+	    .hero { padding: 18px; margin-bottom: 14px; }
+	    .title { margin: 0; font-family: var(--serif); font-size: 28px; }
+	    .meta { margin-top: 10px; color: var(--muted); font-size: 14px; display: flex; gap: 18px; flex-wrap: wrap; }
+	    .meta strong { color: var(--ink); }
+	    .ops-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 14px; }
+	    .ops-item { border: 1px solid var(--line); border-radius: 8px; background: var(--card); padding: 12px; min-width: 0; }
+	    .ops-item.risk { border-color: rgba(198,31,31,0.24); }
+	    .ops-label { color: var(--muted); font-size: 11px; margin-bottom: 5px; }
+	    .ops-value { font-size: 15px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+	    .ops-sub { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+	    .pending-section { margin-bottom: 14px; }
+	    .pending-head {
+	      color: var(--muted);
+	      font-size: 12px;
+	      font-weight: 700;
+	      margin-bottom: 8px;
+	    }
+	    .pending-grid {
+	      display: grid;
+	      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+	      gap: 10px;
+	    }
+	    .pending-card {
+	      border: 1px solid var(--line);
+	      border-radius: 8px;
+	      background: var(--card);
+	      padding: 12px;
+	      min-width: 0;
+	    }
+	    .pending-card.buy { border-color: rgba(198,31,31,0.18); }
+	    .pending-card.sell { border-color: rgba(17,122,75,0.22); }
+	    .pending-title {
+	      display: flex;
+	      align-items: center;
+	      justify-content: space-between;
+	      gap: 10px;
+	      margin-bottom: 8px;
+	    }
+	    .pending-main {
+	      font-size: 18px;
+	      font-weight: 700;
+	      line-height: 1.2;
+	      margin-bottom: 6px;
+	    }
+	    .pending-meta {
+	      color: var(--muted);
+	      font-size: 12px;
+	      line-height: 1.55;
+	      margin-bottom: 4px;
+	    }
+	    .event-section { margin-bottom: 14px; }
+	    .section-head {
+	      display: flex;
+	      justify-content: space-between;
+	      gap: 12px;
+	      margin-bottom: 10px;
+	    }
+	    .event-list {
+	      display: grid;
+	      gap: 7px;
+	    }
+	    .event-item {
+	      display: grid;
+	      grid-template-columns: 120px minmax(0, 1fr);
+	      gap: 10px;
+	      align-items: baseline;
+	      border-top: 1px dashed rgba(30,42,47,0.10);
+	      padding-top: 7px;
+	      font-size: 12px;
+	    }
+	    .event-item:first-child { border-top: none; padding-top: 0; }
+	    .event-time { color: var(--muted); }
+	    .event-text { overflow-wrap: anywhere; }
+	    .event-item.danger .event-text { color: var(--err); font-weight: 700; }
+	    .event-item.pending .event-text { color: var(--warn); font-weight: 700; }
+	    .event-item.ok .event-text { color: var(--ok); font-weight: 700; }
+	    .stock-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }
+	    .disabled-section { margin-top: 14px; }
+	    .disabled-head { color: var(--muted); font-size: 12px; font-weight: 700; margin-bottom: 8px; }
+	    .disabled-list { display: flex; flex-wrap: wrap; gap: 8px; }
+	    .disabled-item {
+	      display: inline-flex;
+	      align-items: center;
+	      gap: 8px;
+	      min-height: 30px;
+	      padding: 0 10px;
+	      border: 1px solid var(--line);
+	      border-radius: 8px;
+	      background: rgba(30,42,47,0.04);
+	      color: var(--muted);
+	      font-size: 12px;
+	    }
+	    .disabled-item strong { color: var(--ink); font-size: 12px; }
+	    .card { padding: 14px; }
+    .label { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+    .value { font-size: 22px; font-weight: 700; }
+    .stock-card { padding: 14px; overflow: hidden; }
+    .stock-card.priority-danger { border-color: rgba(198,31,31,0.34); }
+    .stock-card.priority-pending { border-color: rgba(173,93,34,0.32); }
+    .stock-card.priority-warn { border-color: rgba(173,93,34,0.26); }
+    .stock-card.priority-buy { border-color: rgba(198,31,31,0.22); }
+    .stock-card.priority-sell { border-color: rgba(17,122,75,0.24); }
+    .stock-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .stock-title { margin: 0; font-size: 20px; font-weight: 700; }
+    .stock-sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .next-action {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+      background: var(--card);
+    }
+    .next-action.buy { border-color: rgba(198,31,31,0.22); background: rgba(198,31,31,0.06); }
+    .next-action.sell { border-color: rgba(17,122,75,0.22); background: rgba(17,122,75,0.06); }
+    .next-action.warn, .next-action.pending { border-color: rgba(173,93,34,0.24); background: rgba(173,93,34,0.07); }
+    .next-action.danger { border-color: rgba(198,31,31,0.28); background: rgba(198,31,31,0.08); }
+    .next-action-label {
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+    .next-action-text {
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .timeline {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .timeline-step {
+      min-height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: rgba(30,42,47,0.04);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-align: center;
+      padding: 0 6px;
+    }
+    .timeline-step.active {
+      border-color: rgba(173,93,34,0.24);
+      background: rgba(173,93,34,0.10);
+      color: var(--warn);
+    }
+    .timeline-step.done {
+      border-color: rgba(18,95,160,0.18);
+      background: rgba(18,95,160,0.09);
+      color: var(--info);
+    }
+    .price-hero .stock-sub {
+      font-size: 11px;
+      line-height: 1.45;
+      margin-top: 8px;
+    }
+    .badge {
+	      display: inline-flex;
+	      align-items: center;
+	      border-radius: 8px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      border: 1px solid var(--line);
+      background: rgba(11,122,117,0.10);
+      color: var(--accent);
+      white-space: nowrap;
+    }
+    .badge.off {
+      background: rgba(173,93,34,0.12);
+      color: var(--warn);
+      border-color: rgba(173,93,34,0.20);
+    }
+    .stock-price {
+      font-size: clamp(22px, 2.4vw, 26px);
+      font-weight: 700;
+      margin-bottom: 2px;
+      font-family: var(--serif);
+      line-height: 1.1;
+      overflow-wrap: anywhere;
+    }
+    .stock-price.up { color: var(--up); }
+    .stock-price.down { color: var(--down); }
+    .stock-price.flat { color: var(--ink); }
+    .trend {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      margin-top: 2px;
+    }
+    .trend.up { color: var(--up); }
+    .trend.down { color: var(--down); }
+    .trend.flat { color: var(--muted); }
+    .stock-overview {
+      display: grid;
+      grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+      gap: 10px;
+      margin-bottom: 10px;
+      align-items: stretch;
+    }
+	    .price-hero {
+	      border: 1px solid var(--line);
+	      border-radius: 8px;
+	      padding: 10px;
+	      background: var(--card);
+	    }
+    .mini-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+	    .mini-card {
+	      border-radius: 8px;
+	      padding: 10px;
+	      background: var(--sunken);
+	      min-width: 0;
+	    }
+    .mini-label {
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .mini-value {
+      font-size: clamp(15px, 1.8vw, 17px);
+      font-weight: 700;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+    }
+    .mini-sub {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .condition-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 2px;
+    }
+    .exposure-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 0 0 10px;
+    }
+	    .condition-card {
+	      border-radius: 8px;
+	      padding: 10px;
+	      border: 1px solid var(--line);
+	      background: var(--card);
+	    }
+	    .condition-card.buy {
+	      background: var(--card);
+	      border-color: rgba(198,31,31,0.14);
+	    }
+	    .condition-card.sell {
+	      background: var(--card);
+	      border-color: rgba(17,122,75,0.16);
+	    }
+    .condition-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .condition-title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .status-chip {
+	      display: inline-flex;
+	      align-items: center;
+	      gap: 6px;
+	      border-radius: 8px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      border: 1px solid var(--line);
+      white-space: nowrap;
+    }
+    .status-chip.wait {
+      background: rgba(18,95,160,0.10);
+      color: var(--info);
+      border-color: rgba(18,95,160,0.18);
+    }
+    .status-chip.active {
+      background: rgba(198,31,31,0.10);
+      color: var(--accent);
+      border-color: rgba(198,31,31,0.18);
+    }
+    .condition-main {
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1.1;
+      margin-bottom: 10px;
+      font-family: var(--serif);
+      overflow-wrap: anywhere;
+    }
+    .condition-main-sub {
+      margin-top: -2px;
+      margin-bottom: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .condition-caption {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 10px;
+    }
+    .insight-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+	    .insight {
+	      border-radius: 8px;
+	      padding: 10px 11px;
+	      background: var(--sunken);
+	      min-width: 0;
+	    }
+    .insight-label {
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 5px;
+    }
+    .insight-value {
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .insight-sub {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .kv-list {
+      display: grid;
+      gap: 8px;
+    }
+    .kv-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      padding-bottom: 7px;
+      border-bottom: 1px dashed rgba(30,42,47,0.10);
+      font-size: 12px;
+    }
+    .kv-row:last-child { border-bottom: none; padding-bottom: 0; }
+    .kv-label { color: var(--muted); }
+    .kv-value {
+      text-align: right;
+      font-weight: 600;
+      line-height: 1.45;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .stock-sections {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr) minmax(0, 0.8fr);
+      gap: 12px;
+      margin-top: 14px;
+    }
+	    .panel {
+	      border: 1px solid var(--line);
+	      border-radius: 8px;
+	      padding: 10px;
+	      background: var(--card);
+	    }
+    .panel.full { grid-column: 1 / -1; }
+    .panel-title {
+      margin: 0 0 8px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .panel-main {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .panel-meta {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .decision-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .state-text {
+      font-size: 14px;
+      line-height: 1.65;
+    }
+    .decision-details {
+      border: 1px dashed rgba(30,42,47,0.18);
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      background: rgba(30,42,47,0.03);
+    }
+    .decision-details summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .decision-details .state-text {
+      margin-top: 8px;
+    }
+    .stale { color: var(--warn); }
+    .live { color: var(--ok); }
+	    #account-section { overflow-x: auto; }
+	    table { width: 100%; min-width: 900px; border-collapse: collapse; overflow: hidden; }
+    th, td { padding: 12px 10px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 14px; }
+    th { color: var(--muted); font-weight: 600; background: var(--sunken); }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .danger { color: var(--err); }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .chip {
+	      display: inline-flex;
+	      align-items: center;
+	      border-radius: 8px;
+      padding: 3px 9px;
+      font-size: 11px;
+      line-height: 1.4;
+      border: 1px solid var(--line);
+      background: rgba(11,122,117,0.08);
+      color: var(--ink);
+    }
+    .chip-neutral { background: rgba(30,42,47,0.06); color: var(--muted); }
+    .chip-config { background: rgba(18,95,160,0.10); color: var(--info); border-color: rgba(18,95,160,0.20); }
+    .chip-funds { background: rgba(173,93,34,0.10); color: #ad5d22; border-color: rgba(173,93,34,0.22); }
+    .chip-margin { background: rgba(111,66,193,0.10); color: #6f42c1; border-color: rgba(111,66,193,0.22); }
+    .chip.limit { background: rgba(173,93,34,0.12); color: var(--warn); border-color: rgba(173,93,34,0.25); font-weight: 700; }
+    code { font-family: var(--mono); font-size: 12px; }
+    .small { font-size: 12px; color: var(--muted); }
+    @media (max-width: 900px) {
+      .wrap { padding: 14px; }
+      .title { font-size: 28px; }
+      th, td { font-size: 13px; padding: 10px 8px; }
+      .stock-grid { grid-template-columns: 1fr; }
+      .stock-overview { grid-template-columns: 1fr; }
+      .condition-grid { grid-template-columns: 1fr; }
+      .stock-sections { grid-template-columns: 1fr; }
+      .decision-summary { grid-template-columns: 1fr; }
+      .insight-grid { grid-template-columns: 1fr; }
+      .timeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .event-item { grid-template-columns: 1fr; gap: 3px; }
+      .panel.full { grid-column: auto; }
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 0 14px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--card);
+    }
+
+    .segmented {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .segment {
+      min-height: 32px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      padding: 0 11px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .segment span {
+      display: inline-block;
+      min-width: 1.5em;
+      margin-left: 4px;
+      color: inherit;
+      text-align: right;
+    }
+
+    .segment.active {
+      border-color: rgba(18,95,160,0.24);
+      background: rgba(18,95,160,0.10);
+      color: var(--info);
+    }
+
+    .empty-state {
+      grid-column: 1 / -1;
+      padding: 24px;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      background: var(--card);
+      color: var(--muted);
+      text-align: center;
+      font-size: 14px;
+    }
+
+    @media (max-width: 700px) {
+      .toolbar { align-items: stretch; flex-direction: column; }
+      .segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .segment { width: 100%; }
+
+      /* 账户/Token 表格在窄屏改为卡片式键值对，避免横向滚动 */
+      #account-section { overflow-x: visible; }
+      #account-section table { min-width: 0; display: block; }
+      #account-section thead { display: none; }
+      #account-section tbody { display: block; }
+      #account-section tr {
+        display: block;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 4px 12px;
+        margin-bottom: 10px;
+        background: var(--sunken);
+      }
+      #account-section td {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        border: none;
+        padding: 7px 0;
+        text-align: right;
+      }
+      #account-section td::before {
+        content: attr(data-label);
+        color: var(--muted);
+        font-weight: 600;
+        text-align: left;
+      }
+    }

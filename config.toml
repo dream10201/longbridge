@@ -1,0 +1,83 @@
+# Web 监控页面监听地址
+[server]
+# 监听主机，常用 0.0.0.0 或 127.0.0.1
+host = "0.0.0.0"
+# 监听端口
+port = 20017
+
+# 引擎运行参数
+[engine]
+# 轮询周期，控制多久拉一次行情/持仓/订单状态
+poll_interval = "5s"
+# 挂单超时时间，超过后会尝试撤单
+order_timeout = "90s"
+# 本地状态持久化文件，保存最近买卖锚点和挂单信息
+state_file = "state.json"
+# 是否只做策略演练不真实下单，首次使用建议保持 true
+dry_run = true
+# 全局现金使用上限；0 表示关闭
+cash_limit = "0"
+# cash_limit_mode:
+# - "used": 当前已用现金 >= cash_limit 时停止买入
+# - "projected": 本次买入后已用现金会超过 cash_limit 时也停止买入
+cash_limit_mode = "projected"
+# 是否自动刷新 .env 中的 Access Token
+access_token_auto_refresh = true
+# 距离 Access Token 过期多久时，提前调用官方刷新接口
+access_token_refresh_before = "48h"
+# Access Token 刷新后写回的 .env 文件路径
+access_token_env_file = ".env"
+# 交易接口限频窗口
+trade_api_window = "30s"
+# 限频窗口内最多允许的交易接口调用次数
+trade_api_max_calls = 30
+# 两次交易接口调用之间的最小间隔
+trade_api_min_gap = "25ms"
+# 单次行情/交易请求超时时间
+quote_request_timeout = "15s"
+
+# 单只股票一个 [[stocks]]，以下为示例，请按自己的策略调整
+[[stocks]]
+# 美股代码，当前仅支持 .US
+symbol = "AAPL.US"
+# 空仓时的首次建仓价，当前价小于等于该值时买入一笔
+initial_price = "170.00"
+# 卖出阈值百分比，例如 1.50 表示涨到买入价的 1.5% 后触发卖出
+sell_percent = "1.50"
+# 追踪阈值百分比：
+# 卖出时表示达到基础卖点后，允许从最高价回撤多少再卖
+# 买入时表示达到基础买点后，要求从最低价反弹多少再买
+trail_percent = "1.00"
+# 基础补仓阈值百分比。
+# 第 1 次补仓使用该值；
+# 后续补仓会按递增算法放大，例如 base=2 时大致为 2%、3%、5%、8%...
+# 如果卖出一笔，下一次买入档位会随当前持仓笔数自动下降。
+buy_percent = "1.00"
+# 最低盈利金额，未达到则即使触发卖点也不卖
+min_profit = "5.00"
+# 是否允许使用融资购买
+use_margin = false
+# 最大融资/最大名义金额限制；use_margin=false 时通常填 0
+max_margin = "0"
+# 最大持仓笔数，总最大持仓 = max_lots * order_quantity
+max_lots = 3
+# 每笔下单数量；建议满足券商 lot size 要求
+order_quantity = 10
+# 下单备注，会随订单一起提交
+remark = "longbridge-aapl"
+# 是否启用该股票
+enabled = true
+
+[[stocks]]
+symbol = "TSLA.US"
+initial_price = "300.00"
+sell_percent = "2.00"
+trail_percent = "1.00"
+buy_percent = "2.00"
+min_profit = "5.00"
+use_margin = false
+max_margin = "0"
+max_lots = 3
+order_quantity = 10
+remark = "longbridge-tsla"
+enabled = false

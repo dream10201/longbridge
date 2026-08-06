@@ -1,0 +1,20 @@
+services:
+  longbridge:
+    build: .
+    image: longbridge:latest
+    container_name: longbridge
+    restart: unless-stopped
+    # LongPort 凭据(LONGBRIDGE_APP_KEY/APP_SECRET/ACCESS_TOKEN)从 data/.env 注入;
+    # token 自动刷新会写回容器内 /data/.env(即宿主机 data/.env),重启后仍有效
+    env_file: ./data/.env
+    volumes:
+      - ./data:/data
+    ports:
+      # 只把监控面板暴露给本机;config.toml 里 server.host 需为 0.0.0.0
+      - "127.0.0.1:20017:20017"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/longbridge", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 5

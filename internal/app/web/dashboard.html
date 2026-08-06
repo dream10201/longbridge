@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>longbridge 状态面板</title>
+  <link rel="stylesheet" href="static/dashboard.css">
+
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <div>
+        <h1 class="title">longbridge 状态面板</h1>
+      </div>
+      <div class="meta">
+        <span>最后刷新: <code id="last-updated"></code></span>
+        <span>轮询状态: <strong id="poll-state"></strong></span>
+      </div>
+    </section>
+
+    <section class="ops-strip" id="ops-strip"></section>
+    <section class="pending-section" id="pending-section"></section>
+    <section class="event-section card" id="event-section"></section>
+    <section class="toolbar" aria-label="标的筛选">
+      <div class="segmented" id="stock-filter">
+        <button type="button" class="segment active" data-filter="all">全部 <span id="count-all">0</span></button>
+        <button type="button" class="segment" data-filter="pending">挂单 <span id="count-pending">0</span></button>
+        <button type="button" class="segment" data-filter="limited">受限 <span id="count-limited">0</span></button>
+        <button type="button" class="segment" data-filter="error">异常 <span id="count-error">0</span></button>
+      </div>
+    </section>
+    <section class="card" style="margin-bottom:20px;" id="account-section"></section>
+    <section class="stock-grid" id="stock-grid"></section>
+    <section class="disabled-section" id="disabled-section"></section>
+  </div>
+
+  <script id="initial-status" type="application/json">{{toJSON .}}</script>
+  <script src="static/dashboard.js" defer></script>
+
+</body>
+</html>
