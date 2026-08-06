@@ -20,8 +20,9 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host string
-	Port int
+	Host       string
+	Port       int
+	AuthSecret string
 }
 
 func (c ServerConfig) Address() string {
@@ -66,8 +67,9 @@ type rawConfig struct {
 }
 
 type rawServerConfig struct {
-	Host string `toml:"host"`
-	Port int    `toml:"port"`
+	Host       string `toml:"host"`
+	Port       int    `toml:"port"`
+	AuthSecret string `toml:"auth_secret"`
 }
 
 type rawEngineConfig struct {
@@ -122,8 +124,9 @@ func LoadConfig(path string) (*Config, error) {
 		FilePath: absPath,
 		BaseDir:  filepath.Dir(absPath),
 		Server: ServerConfig{
-			Host: firstNonEmpty(raw.Server.Host, "0.0.0.0"),
-			Port: raw.Server.Port,
+			Host:       firstNonEmpty(raw.Server.Host, "0.0.0.0"),
+			Port:       raw.Server.Port,
+			AuthSecret: strings.TrimSpace(raw.Server.AuthSecret),
 		},
 		Engine: EngineConfig{
 			StateFile:          firstNonEmpty(raw.Engine.StateFile, "state.json"),

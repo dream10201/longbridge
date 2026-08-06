@@ -4,6 +4,11 @@
 host = "0.0.0.0"
 # 监听端口
 port = 20017
+# 访问校验密钥,留空则不启用。
+# 启用后所有页面/接口(除 /healthz)都要求请求携带 X-Admin-Secret 头,
+# 适合放在反向代理后面,由代理注入,例如 Caddy:
+#   header_up X-Admin-Secret your-secret
+# auth_secret = ""
 
 # 引擎运行参数
 [engine]

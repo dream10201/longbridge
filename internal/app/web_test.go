@@ -10,7 +10,7 @@ import (
 )
 
 func TestHTTPHandlerServesDashboardAssets(t *testing.T) {
-	handler := NewHTTPHandler(&Engine{})
+	handler := NewHTTPHandler(&Engine{}, ServerConfig{})
 
 	tests := []struct {
 		path        string
@@ -41,7 +41,7 @@ func TestHTTPHandlerServesDashboardAssets(t *testing.T) {
 }
 
 func TestHTTPHandlerGzipCompressesStatus(t *testing.T) {
-	handler := NewHTTPHandler(&Engine{})
+	handler := NewHTTPHandler(&Engine{}, ServerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	rec := httptest.NewRecorder()
@@ -67,7 +67,7 @@ func TestHTTPHandlerGzipCompressesStatus(t *testing.T) {
 }
 
 func TestHTTPHandlerStatusETagReturns304(t *testing.T) {
-	handler := NewHTTPHandler(&Engine{})
+	handler := NewHTTPHandler(&Engine{}, ServerConfig{})
 
 	first := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	firstRec := httptest.NewRecorder()
@@ -96,7 +96,7 @@ func TestHTTPHandlerStatusETagReturns304(t *testing.T) {
 }
 
 func TestHTTPHandlerDashboardUsesRelativeAssetPaths(t *testing.T) {
-	handler := NewHTTPHandler(&Engine{})
+	handler := NewHTTPHandler(&Engine{}, ServerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/proxy/8080/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -107,5 +107,45 @@ func TestHTTPHandlerDashboardUsesRelativeAssetPaths(t *testing.T) {
 	}
 	if !strings.Contains(body, `href="static/dashboard.css"`) || !strings.Contains(body, `src="static/dashboard.js"`) {
 		t.Fatalf("expected dashboard to reference relative static assets")
+	}
+}
+
+func TestHTTPHandlerAuthHeader(t *testing.T) {
+	cfg := ServerConfig{AuthSecret: "topsecret"}
+	handler := NewHTTPHandler(&Engine{}, cfg)
+
+	tests := []struct {
+		name       string
+		path       string
+		headerVal  string
+		wantStatus int
+	}{
+		{"无密钥拒绝", "/", "", http.StatusUnauthorized},
+		{"密钥错误拒绝", "/api/status", "wrong", http.StatusUnauthorized},
+		{"密钥正确放行", "/", "topsecret", http.StatusOK},
+		{"healthz 免鉴权", "/healthz", "", http.StatusOK},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			if tc.headerVal != "" {
+				req.Header.Set(authHeaderName, tc.headerVal)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("%s: expected status %d, got %d", tc.path, tc.wantStatus, rec.Code)
+			}
+		})
+	}
+}
+
+func TestHTTPHandlerAuthDisabledByDefault(t *testing.T) {
+	handler := NewHTTPHandler(&Engine{}, ServerConfig{})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 when auth disabled, got %d", rec.Code)
 	}
 }

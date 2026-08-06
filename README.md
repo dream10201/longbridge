@@ -99,6 +99,17 @@ http://127.0.0.1:20017/
 
 ## 配置说明
 
+### `[server]`
+
+| 字段 | 说明 | 默认 |
+|---|---|---|
+| `host` / `port` | Web 面板监听地址 | `0.0.0.0` / 必填 |
+| `auth_secret` | 访问校验密钥；留空不启用 | 空 |
+
+- 配置 `auth_secret` 后，所有页面和接口（`/healthz` 除外）都要求请求携带 `X-Admin-Secret: <auth_secret>`，否则返回 401
+- 典型用法是放在反向代理后面由代理注入,例如 Caddy：`header_up X-Admin-Secret your-secret`
+- Docker 健康检查走免鉴权的 `/healthz`，不受影响
+
 ### `[engine]`
 
 | 字段 | 说明 | 默认 |

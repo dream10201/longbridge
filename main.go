@@ -19,7 +19,7 @@ import (
 func main() {
 	configPath := flag.String("config", "config.toml", "配置文件路径")
 	healthcheck := flag.Bool("healthcheck", false, "健康检查模式:请求 health-url,HTTP 200 时退出码 0(供 Docker HEALTHCHECK 用,distroless 镜像无 curl)")
-	healthURL := flag.String("health-url", "http://127.0.0.1:20017/", "健康检查地址")
+	healthURL := flag.String("health-url", "http://127.0.0.1:20017/healthz", "健康检查地址")
 	flag.Parse()
 
 	if *healthcheck {
@@ -41,7 +41,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              cfg.Server.Address(),
-		Handler:           app.NewHTTPHandler(engine),
+		Handler:           app.NewHTTPHandler(engine, cfg.Server),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

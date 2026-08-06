@@ -2,6 +2,7 @@ package app
 
 import (
 	"compress/gzip"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -25,14 +26,18 @@ var dashboardTemplate = template.Must(template.New("dashboard.html").Funcs(templ
 	},
 }).ParseFS(dashboardAssets, "web/dashboard.html"))
 
-func NewHTTPHandler(engine *Engine) http.Handler {
+func NewHTTPHandler(engine *Engine, server ServerConfig) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok"))
+	})
 	staticAssets, err := fs.Sub(dashboardAssets, "web")
 	if err != nil {
 		panic(err)
 	}
 	staticHandler := http.FileServer(http.FS(staticAssets))
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/", authMiddleware(server, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if path == "/api/status" || strings.HasSuffix(path, "/api/status") {
 			body, err := json.Marshal(engine.Snapshot())
@@ -60,8 +65,27 @@ func NewHTTPHandler(engine *Engine) http.Handler {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = dashboardTemplate.Execute(w, engine.Snapshot())
-	})
+	})))
 	return gzipMiddleware(mux)
+}
+
+// authHeaderName 是访问校验使用的固定请求头。
+const authHeaderName = "X-Admin-Secret"
+
+// authMiddleware 校验固定请求头（如反向代理通过 header_up 注入的密钥）。
+// 未配置 auth_secret 时不启用；比较使用常量时间算法避免时序侧信道。
+func authMiddleware(server ServerConfig, next http.Handler) http.Handler {
+	if server.AuthSecret == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := r.Header.Get(authHeaderName)
+		if subtle.ConstantTimeCompare([]byte(got), []byte(server.AuthSecret)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func fnvSum(data []byte) uint64 {
