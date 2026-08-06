@@ -3,6 +3,8 @@
 FROM public.ecr.aws/docker/library/golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
+# go.mod 里 replace 指向本地 third_party,下载依赖前需一并拷入
+COPY third_party ./third_party
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/longbridge .
