@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	lbhttp "github.com/longbridge/openapi-go/http"
 )
 
 func TestParseAccessTokenExpiry(t *testing.T) {
@@ -37,11 +39,15 @@ func TestAccessTokenManagerRefreshAndPersist(t *testing.T) {
 	var gotAuthorization string
 	var gotAPIKey string
 	var gotExpiredAt string
+	var gotSignature string
+	var gotTimestamp string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuthorization = r.Header.Get("Authorization")
 		gotAPIKey = r.Header.Get("x-api-key")
 		gotExpiredAt = r.URL.Query().Get("expired_at")
+		gotSignature = r.Header.Get("x-api-signature")
+		gotTimestamp = r.Header.Get("x-timestamp")
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"code":0,"message":"ok","data":{"token":"`+newToken+`","expired_at":"`+newExpiresAt.Format(time.RFC3339)+`"}}`)
@@ -57,13 +63,22 @@ func TestAccessTokenManagerRefreshAndPersist(t *testing.T) {
 	t.Setenv(longbridgeAccessTokenKey, oldToken)
 	t.Setenv(longportAccessTokenKey, "")
 
+	apiClient, err := lbhttp.New(
+		lbhttp.WithURL(server.URL),
+		lbhttp.WithAppKey("test-app-key"),
+		lbhttp.WithAppSecret("test-app-secret"),
+		lbhttp.WithAccessToken(oldToken),
+		lbhttp.WithClient(server.Client()),
+	)
+	if err != nil {
+		t.Fatalf("new api client: %v", err)
+	}
+
 	manager := &AccessTokenManager{
 		enabled:       true,
 		refreshBefore: time.Hour,
 		envFile:       envPath,
-		httpURL:       server.URL,
-		appKey:        "test-app-key",
-		httpClient:    server.Client(),
+		apiClient:     apiClient,
 		logger:        log.New(io.Discard, "", 0),
 	}
 
@@ -82,6 +97,12 @@ func TestAccessTokenManagerRefreshAndPersist(t *testing.T) {
 	}
 	if gotExpiredAt != oldExpiresAt.Format(time.RFC3339) {
 		t.Fatalf("expected expired_at %q, got %q", oldExpiresAt.Format(time.RFC3339), gotExpiredAt)
+	}
+	if !strings.Contains(gotSignature, "Signature=") {
+		t.Fatalf("expected signed request, got x-api-signature %q", gotSignature)
+	}
+	if gotTimestamp == "" {
+		t.Fatalf("expected x-timestamp header to be set")
 	}
 	if got := os.Getenv(longbridgeAccessTokenKey); got != newToken {
 		t.Fatalf("expected env token %q, got %q", newToken, got)

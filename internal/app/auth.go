@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	lbconfig "github.com/longbridge/openapi-go/config"
+	lbhttp "github.com/longbridge/openapi-go/http"
 )
 
 const (
@@ -28,9 +28,7 @@ type AccessTokenManager struct {
 	enabled       bool
 	refreshBefore time.Duration
 	envFile       string
-	httpURL       string
-	appKey        string
-	httpClient    *http.Client
+	apiClient     *lbhttp.Client
 	logger        *log.Logger
 
 	mu               sync.Mutex
@@ -38,12 +36,6 @@ type AccessTokenManager struct {
 	lastRefreshAt    *time.Time
 	lastRefreshState string
 	lastRefreshMsg   string
-}
-
-type refreshAccessTokenEnvelope struct {
-	Code    int                      `json:"code"`
-	Message string                   `json:"message"`
-	Data    refreshAccessTokenResult `json:"data"`
 }
 
 type refreshAccessTokenResult struct {
@@ -92,13 +84,22 @@ func NewAccessTokenManager(cfg *Config, logger *log.Logger) (*AccessTokenManager
 		timeout = 15 * time.Second
 	}
 
+	apiClient, err := lbhttp.New(
+		lbhttp.WithURL(strings.TrimRight(httpURL, "/")),
+		lbhttp.WithAppKey(strings.TrimSpace(sdkCfg.AppKey)),
+		lbhttp.WithAppSecret(strings.TrimSpace(sdkCfg.AppSecret)),
+		lbhttp.WithAccessToken(strings.TrimSpace(sdkCfg.AccessToken)),
+		lbhttp.WithClient(newProxyAwareHTTPClient(timeout)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 LongPort HTTP 客户端失败: %w", err)
+	}
+
 	return &AccessTokenManager{
 		enabled:       cfg.Engine.AccessTokenAutoRefresh,
 		refreshBefore: cfg.Engine.AccessTokenRefreshBefore,
 		envFile:       cfg.Engine.AccessTokenEnvFile,
-		httpURL:       strings.TrimRight(httpURL, "/"),
-		appKey:        strings.TrimSpace(sdkCfg.AppKey),
-		httpClient:    newProxyAwareHTTPClient(timeout),
+		apiClient:     apiClient,
 		logger:        logger,
 	}, nil
 }
@@ -232,42 +233,17 @@ func (m *AccessTokenManager) refreshAccessToken(ctx context.Context, token strin
 	params := url.Values{}
 	params.Set("expired_at", expiresAt.UTC().Format(time.RFC3339))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.httpURL+"/v1/token/refresh?"+params.Encode(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("构造刷新 Access Token 请求失败: %w", err)
-	}
-	req.Header.Set("Authorization", token)
-	if m.appKey != "" {
-		req.Header.Set("x-api-key", m.appKey)
-	}
-	req.Header.Set("Accept", "application/json")
+	header := http.Header{}
+	header.Set("Authorization", token)
 
-	resp, err := m.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("刷新 Access Token 请求失败: %w", err)
+	var result refreshAccessTokenResult
+	if err := m.apiClient.Get(ctx, "/v1/token/refresh", params, &result, lbhttp.WithHeader(header)); err != nil {
+		return nil, fmt.Errorf("刷新 Access Token 失败: %w", err)
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取刷新 Access Token 响应失败: %w", err)
-	}
-
-	var envelope refreshAccessTokenEnvelope
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("解析刷新 Access Token 响应失败: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK || envelope.Code != 0 {
-		message := strings.TrimSpace(envelope.Message)
-		if message == "" {
-			message = strings.TrimSpace(string(body))
-		}
-		return nil, fmt.Errorf("刷新 Access Token 失败: http=%d code=%d message=%s", resp.StatusCode, envelope.Code, message)
-	}
-	if strings.TrimSpace(envelope.Data.TokenValue()) == "" {
+	if strings.TrimSpace(result.TokenValue()) == "" {
 		return nil, fmt.Errorf("刷新 Access Token 失败: 响应中缺少 token")
 	}
-	return &envelope.Data, nil
+	return &result, nil
 }
 
 func currentAccessToken() string {
