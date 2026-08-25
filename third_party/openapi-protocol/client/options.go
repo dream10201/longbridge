@@ -10,7 +10,10 @@ import (
 var (
 	defaultDialTimeout      = time.Second * 5
 	defaultAuthTimeout      = time.Second * 10
-	defaultKeepalive        = time.Second * 60
+	// 上游默认 60s。线上观察到连接在空闲约 60s 时被链路上的空闲超时掐断
+	// (close 1006, 无 close 帧),首个心跳恰好赶不上,导致每分钟断线重连一次。
+	// 缩短到 15s 使心跳先于任何 ~60s 的空闲计时器到达。
+	defaultKeepalive        = time.Second * 15
 	defaultKeepaliveTimeout = defaultKeepalive * 2
 	defaultWriteQueueSize   = 16
 	defaultReadBufferSize   = 4096
