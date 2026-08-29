@@ -224,6 +224,11 @@ func (c *client) reconnecting() {
 			err := c.reconnect()
 
 			if err == nil {
+				// 重连成功后必须复位心跳状态。auth 过期路径不会经过
+				// reconnectDial,若不复位,陈旧的 lastPongAt 会让下一个
+				// tick 立即判定超时,陷入无限重连。
+				c.lastKeepaliveId = 0
+				c.lastPongAt = time.Now()
 				c.Logger.Info("reconnect success")
 				if c.afterReconnected != nil {
 					c.afterReconnected()
