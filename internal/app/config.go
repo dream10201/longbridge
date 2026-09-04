@@ -17,6 +17,7 @@ type Config struct {
 	Server   ServerConfig
 	Engine   EngineConfig
 	Stocks   []StockConfig
+	Warnings []string
 }
 
 type ServerConfig struct {
@@ -34,8 +35,7 @@ type EngineConfig struct {
 	OrderTimeout             time.Duration
 	StateFile                string
 	DryRun                   bool
-	CashLimit                decimal.Decimal
-	CashLimitMode            string
+	MaxExposure              decimal.Decimal
 	AccessTokenAutoRefresh   bool
 	AccessTokenRefreshBefore time.Duration
 	AccessTokenEnvFile       string
@@ -53,7 +53,6 @@ type StockConfig struct {
 	BuyPercent    decimal.Decimal
 	MinProfit     decimal.Decimal
 	UseMargin     bool
-	MaxMargin     decimal.Decimal
 	MaxLots       int64
 	OrderQuantity int64
 	Remark        string
@@ -77,6 +76,7 @@ type rawEngineConfig struct {
 	OrderTimeout             string `toml:"order_timeout"`
 	StateFile                string `toml:"state_file"`
 	DryRun                   bool   `toml:"dry_run"`
+	MaxExposure              string `toml:"max_exposure"`
 	CashLimit                string `toml:"cash_limit"`
 	CashLimitMode            string `toml:"cash_limit_mode"`
 	AccessTokenAutoRefresh   *bool  `toml:"access_token_auto_refresh"`
@@ -116,7 +116,8 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	var raw rawConfig
-	if err := toml.Unmarshal(body, &raw); err != nil {
+	meta, err := toml.Decode(string(body), &raw)
+	if err != nil {
 		return nil, fmt.Errorf("解析 TOML 失败: %w", err)
 	}
 
@@ -131,11 +132,12 @@ func LoadConfig(path string) (*Config, error) {
 		Engine: EngineConfig{
 			StateFile:          firstNonEmpty(raw.Engine.StateFile, "state.json"),
 			DryRun:             raw.Engine.DryRun,
-			CashLimitMode:      firstNonEmpty(raw.Engine.CashLimitMode, CashLimitModeUsed),
 			AccessTokenEnvFile: firstNonEmpty(raw.Engine.AccessTokenEnvFile, ".env"),
 		},
 	}
-	cfg.Engine.CashLimitMode = strings.ToLower(strings.TrimSpace(cfg.Engine.CashLimitMode))
+	for _, key := range meta.Undecoded() {
+		cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("未知配置项 %s 已忽略", key))
+	}
 
 	cfg.Engine.StateFile = resolvePathFromBase(cfg.BaseDir, cfg.Engine.StateFile)
 	cfg.Engine.AccessTokenEnvFile = resolvePathFromBase(cfg.BaseDir, cfg.Engine.AccessTokenEnvFile)
@@ -162,9 +164,17 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Engine.QuoteRequestTimeout, err = parseDurationOrDefault(raw.Engine.QuoteRequestTimeout, 15*time.Second); err != nil {
 		return nil, fmt.Errorf("engine.quote_request_timeout 无效: %w", err)
 	}
-	if strings.TrimSpace(raw.Engine.CashLimit) != "" {
-		if cfg.Engine.CashLimit, err = parseDecimal(raw.Engine.CashLimit, "cash_limit"); err != nil {
-			return nil, fmt.Errorf("engine.cash_limit 无效: %w", err)
+	maxExposure := raw.Engine.MaxExposure
+	if strings.TrimSpace(maxExposure) == "" && strings.TrimSpace(raw.Engine.CashLimit) != "" {
+		maxExposure = raw.Engine.CashLimit
+		cfg.Warnings = append(cfg.Warnings, "engine.cash_limit 已更名为 engine.max_exposure,请更新配置")
+	}
+	if strings.TrimSpace(raw.Engine.CashLimitMode) != "" {
+		cfg.Warnings = append(cfg.Warnings, "engine.cash_limit_mode 已移除,上限始终按买入后总投入校验")
+	}
+	if strings.TrimSpace(maxExposure) != "" {
+		if cfg.Engine.MaxExposure, err = parseDecimal(maxExposure, "max_exposure"); err != nil {
+			return nil, fmt.Errorf("engine.max_exposure 无效: %w", err)
 		}
 	}
 	cfg.Engine.TradeAPIMaxCalls = raw.Engine.TradeAPIMaxCalls
@@ -215,12 +225,8 @@ func LoadConfig(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", symbol, err)
 		}
-		maxMargin := decimal.Zero
 		if strings.TrimSpace(item.MaxMargin) != "" {
-			maxMargin, err = parseDecimal(item.MaxMargin, "max_margin")
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", symbol, err)
-			}
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("%s: max_margin 已移除,请删除该配置项", symbol))
 		}
 
 		enabled := true
@@ -235,7 +241,6 @@ func LoadConfig(path string) (*Config, error) {
 			BuyPercent:    buyPercent,
 			MinProfit:     minProfit,
 			UseMargin:     item.UseMargin,
-			MaxMargin:     maxMargin,
 			MaxLots:       item.MaxLots,
 			OrderQuantity: item.OrderQuantity,
 			Remark:        strings.TrimSpace(item.Remark),
@@ -268,13 +273,8 @@ func (c *Config) Validate() error {
 	if c.Engine.TradeAPIWindow <= 0 || c.Engine.TradeAPIMaxCalls <= 0 || c.Engine.TradeAPIMinGap <= 0 {
 		return fmt.Errorf("trade API 限频参数必须大于 0")
 	}
-	if c.Engine.CashLimit.IsNegative() {
-		return fmt.Errorf("engine.cash_limit 不能小于 0")
-	}
-	switch c.Engine.CashLimitMode {
-	case "", CashLimitModeUsed, CashLimitModeProjected:
-	default:
-		return fmt.Errorf("engine.cash_limit_mode 只能是 %q 或 %q", CashLimitModeUsed, CashLimitModeProjected)
+	if c.Engine.MaxExposure.IsNegative() {
+		return fmt.Errorf("engine.max_exposure 不能小于 0")
 	}
 	remarks := make(map[string]string, len(c.Stocks))
 	for _, stock := range c.Stocks {
@@ -298,9 +298,6 @@ func (c *Config) Validate() error {
 		}
 		if stock.MinProfit.IsNegative() {
 			return fmt.Errorf("%s: min_profit 不能小于 0", stock.Symbol)
-		}
-		if stock.MaxMargin.IsNegative() {
-			return fmt.Errorf("%s: max_margin 不能小于 0", stock.Symbol)
 		}
 		if !strings.HasSuffix(stock.Symbol, ".US") {
 			return fmt.Errorf("%s: 当前仅支持美股代码，示例 AAPL.US", stock.Symbol)

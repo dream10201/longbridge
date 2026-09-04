@@ -102,10 +102,8 @@ func (s *StateStore) Get(symbol string) SymbolState {
 	return *item
 }
 
-// Update 只修改内存中的状态并标记为脏,不立即写盘。
-// 真正落盘集中在生命周期节点(优雅退出 / 崩溃恢复)由 Flush 完成,
-// 以避免每个轮询周期内对全量状态文件做数十次序列化与替换。
-func (s *StateStore) Update(symbol string, fn func(*SymbolState)) error {
+// Update 只修改内存中的状态并标记为脏,不立即写盘;落盘由 Flush 完成。
+func (s *StateStore) Update(symbol string, fn func(*SymbolState)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -117,7 +115,6 @@ func (s *StateStore) Update(symbol string, fn func(*SymbolState)) error {
 	fn(item)
 	s.state.UpdatedAt = time.Now().UTC()
 	s.dirty = true
-	return nil
 }
 
 // Flush 在有未落盘修改时,将当前内存状态原子写入磁盘。无修改时为空操作。
@@ -142,12 +139,21 @@ func (s *StateStore) saveLocked() error {
 	if err != nil {
 		return fmt.Errorf("序列化状态失败: %w", err)
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("写入临时状态文件失败: %w", err)
+	if err := writeFileAtomic(s.path, data, 0o644); err != nil {
+		return fmt.Errorf("写入状态文件失败: %w", err)
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		return fmt.Errorf("替换状态文件失败: %w", err)
+	return nil
+}
+
+// writeFileAtomic 先写临时文件再 rename 替换,避免崩溃时留下截断文件。
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 	return nil
 }

@@ -13,44 +13,42 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestAvailableFundsUsedCash(t *testing.T) {
+func TestAvailableFundsApplyBuyDrawsCashThenMargin(t *testing.T) {
 	funds := availableFunds{
-		TotalCash:     mustDecimal(t, "1000"),
-		AvailableCash: mustDecimal(t, "250"),
+		AvailableCash:   mustDecimal(t, "150"),
+		RemainingMargin: mustDecimal(t, "500"),
+		BuyPower:        mustDecimal(t, "650"),
+		Deployed:        mustDecimal(t, "1000"),
 	}
 
-	if got := funds.UsedCash(); !got.Equal(mustDecimal(t, "750")) {
-		t.Fatalf("expected used cash 750, got %s", got)
+	funds.applyBuy(mustDecimal(t, "200"))
+	if !funds.Deployed.Equal(mustDecimal(t, "1200")) {
+		t.Fatalf("expected deployed 1200, got %s", funds.Deployed)
+	}
+	if !funds.AvailableCash.IsZero() {
+		t.Fatalf("expected cash 0, got %s", funds.AvailableCash)
+	}
+	if !funds.RemainingMargin.Equal(mustDecimal(t, "450")) {
+		t.Fatalf("expected margin 450, got %s", funds.RemainingMargin)
+	}
+	if !funds.BuyPower.Equal(mustDecimal(t, "450")) {
+		t.Fatalf("expected buy power 450, got %s", funds.BuyPower)
 	}
 }
 
-func TestAvailableFundsUsedCashPrefersDeployedCash(t *testing.T) {
-	funds := availableFunds{
-		TotalCash:     mustDecimal(t, "1000"),
-		AvailableCash: mustDecimal(t, "997.97"),
-		DeployedCash:  mustDecimal(t, "7800"),
-	}
-
-	if got := funds.UsedCash(); !got.Equal(mustDecimal(t, "7800")) {
-		t.Fatalf("expected deployed cash 7800, got %s", got)
-	}
-}
-
-func TestStrategyDeployedCashIncludesPositionsAndPendingBuys(t *testing.T) {
+func TestStrategyDeployedIncludesPositionsAndPendingBuys(t *testing.T) {
 	state, err := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {
 		t.Fatalf("new state store: %v", err)
 	}
-	if err := state.Update("NVDA.US", func(s *SymbolState) {
+	state.Update("NVDA.US", func(s *SymbolState) {
 		s.Pending = &PendingOrderState{
 			Side:           ActionBuy,
 			SubmittedPrice: "200",
 			SubmittedQty:   5,
 			SubmittedAt:    time.Now().UTC(),
 		}
-	}); err != nil {
-		t.Fatalf("update state: %v", err)
-	}
+	})
 
 	engine := &Engine{
 		cfg: &Config{
@@ -69,7 +67,7 @@ func TestStrategyDeployedCashIncludesPositionsAndPendingBuys(t *testing.T) {
 		"AMD.US":  {Quantity: 5, CostPrice: mustDecimal(t, "210"), HasCost: true},
 	}
 
-	got := engine.strategyDeployedCash(positions, nil, MarketPhaseNormal)
+	got := engine.strategyDeployed(positions, nil, MarketPhaseNormal)
 	want := mustDecimal(t, "8700")
 	if !got.Equal(want) {
 		t.Fatalf("expected deployed cash %s, got %s", want, got)
@@ -99,21 +97,18 @@ func TestEnabledSymbolsSkipsDisabledStocks(t *testing.T) {
 	}
 }
 
-func TestApplyGlobalBuyConstraintsStopsBuyWhenCashLimitReached(t *testing.T) {
+func TestApplyGlobalBuyConstraintsStopsBuyWhenExposureReached(t *testing.T) {
 	decision := Decision{
 		Action: ActionBuy,
 		Reason: "准备买入",
 	}
-	funds := availableFunds{
-		TotalCash:     mustDecimal(t, "1000"),
-		AvailableCash: mustDecimal(t, "200"),
-	}
+	funds := availableFunds{Deployed: mustDecimal(t, "800")}
 
-	got := applyGlobalBuyConstraints(decision, funds, nil, mustDecimal(t, "800"), CashLimitModeUsed, decimal.Zero)
+	got := applyGlobalBuyConstraints(decision, funds, nil, mustDecimal(t, "800"), decimal.Zero)
 	if got.Action != ActionNone {
 		t.Fatalf("expected buy to be blocked, got %s", got.Action)
 	}
-	if !strings.Contains(got.Reason, "已达到全局上限") {
+	if !strings.Contains(got.Reason, "已达到最大投入金额") {
 		t.Fatalf("expected limit reason, got %q", got.Reason)
 	}
 }
@@ -147,26 +142,23 @@ func TestApplyGlobalBuyConstraintsBlocksBuyOnAccountError(t *testing.T) {
 		Reason: "准备买入",
 	}
 
-	got := applyGlobalBuyConstraints(decision, availableFunds{}, errors.New("balance unavailable"), mustDecimal(t, "1"), CashLimitModeUsed, decimal.Zero)
+	got := applyGlobalBuyConstraints(decision, availableFunds{}, errors.New("balance unavailable"), mustDecimal(t, "1"), decimal.Zero)
 	if got.Action != ActionNone {
 		t.Fatalf("expected buy to be blocked, got %s", got.Action)
 	}
-	if !strings.Contains(got.Reason, "无法校验现金使用上限") {
+	if !strings.Contains(got.Reason, "无法校验最大投入金额") {
 		t.Fatalf("expected account error reason, got %q", got.Reason)
 	}
 }
 
-func TestApplyGlobalBuyConstraintsProjectedCashLimit(t *testing.T) {
+func TestApplyGlobalBuyConstraintsProjectedExposure(t *testing.T) {
 	decision := Decision{
 		Action: ActionBuy,
 		Reason: "准备买入",
 	}
-	funds := availableFunds{
-		TotalCash:     mustDecimal(t, "1000"),
-		AvailableCash: mustDecimal(t, "300"),
-	}
+	funds := availableFunds{Deployed: mustDecimal(t, "700")}
 
-	got := applyGlobalBuyConstraints(decision, funds, nil, mustDecimal(t, "800"), CashLimitModeProjected, mustDecimal(t, "120"))
+	got := applyGlobalBuyConstraints(decision, funds, nil, mustDecimal(t, "800"), mustDecimal(t, "120"))
 	if got.Action != ActionNone {
 		t.Fatalf("expected buy to be blocked, got %s", got.Action)
 	}
@@ -175,59 +167,66 @@ func TestApplyGlobalBuyConstraintsProjectedCashLimit(t *testing.T) {
 	}
 }
 
-func TestEstimateBuyCapacityStopsWhenCashLimitReached(t *testing.T) {
+func TestEstimateBuyCapacityStopsWhenExposureReached(t *testing.T) {
 	stock := StockConfig{
 		Symbol:        "AAPL.US",
 		MaxLots:       5,
 		OrderQuantity: 10,
 	}
-	position := PositionSnapshot{}
 	funds := availableFunds{
-		TotalCash:     mustDecimal(t, "1000"),
 		AvailableCash: mustDecimal(t, "150"),
+		Deployed:      mustDecimal(t, "850"),
 	}
 
-	capacity := estimateBuyCapacity(stock, position, mustDecimal(t, "10"), funds, mustDecimal(t, "850"), CashLimitModeUsed)
-	remainingLots, reason, bottlenecks, limitTags := capacity.RemainingLots, capacity.Reason, capacity.Bottlenecks, capacity.LimitTags
-	if remainingLots != 0 {
-		t.Fatalf("expected remaining lots 0, got %d", remainingLots)
+	capacity := estimateBuyCapacity(stock, PositionSnapshot{}, mustDecimal(t, "10"), funds, mustDecimal(t, "850"))
+	if capacity.RemainingLots != 0 {
+		t.Fatalf("expected remaining lots 0, got %d", capacity.RemainingLots)
 	}
-	if !strings.Contains(reason, "已用现金") {
-		t.Fatalf("expected used cash reason, got %q", reason)
+	if !strings.Contains(capacity.Reason, "已投入 850.0000 / 上限 850.0000") {
+		t.Fatalf("expected exposure reason, got %q", capacity.Reason)
 	}
-	if len(bottlenecks) == 0 || bottlenecks[0] != "现金使用上限" {
-		t.Fatalf("expected cash limit bottleneck, got %#v", bottlenecks)
+	if len(capacity.Bottlenecks) != 1 || capacity.Bottlenecks[0] != "最大投入金额" {
+		t.Fatalf("expected exposure bottleneck, got %#v", capacity.Bottlenecks)
 	}
-	if len(limitTags) == 0 || limitTags[0].Label != "现金使用上限" {
-		t.Fatalf("expected cash limit tag, got %#v", limitTags)
+	if len(capacity.LimitTags) != 1 || capacity.LimitTags[0].Label != "最大投入金额" {
+		t.Fatalf("expected exposure tag, got %#v", capacity.LimitTags)
 	}
 }
 
-func TestEstimateBuyCapacityProjectedCashLimit(t *testing.T) {
+func TestEstimateBuyCapacityExposureHeadroomLimitsLots(t *testing.T) {
 	stock := StockConfig{
 		Symbol:        "AAPL.US",
 		MaxLots:       5,
 		OrderQuantity: 10,
 	}
-	position := PositionSnapshot{}
 	funds := availableFunds{
-		TotalCash:     mustDecimal(t, "1000"),
 		AvailableCash: mustDecimal(t, "300"),
+		Deployed:      mustDecimal(t, "700"),
 	}
 
-	capacity := estimateBuyCapacity(stock, position, mustDecimal(t, "10"), funds, mustDecimal(t, "850"), CashLimitModeProjected)
-	remainingLots, reason, bottlenecks, limitTags := capacity.RemainingLots, capacity.Reason, capacity.Bottlenecks, capacity.LimitTags
-	if remainingLots != 1 {
-		t.Fatalf("expected remaining lots 1, got %d", remainingLots)
+	capacity := estimateBuyCapacity(stock, PositionSnapshot{}, mustDecimal(t, "10"), funds, mustDecimal(t, "850"))
+	if capacity.RemainingLots != 1 {
+		t.Fatalf("expected remaining lots 1, got %d", capacity.RemainingLots)
 	}
-	if !strings.Contains(reason, "现金上限剩余额度还能支持 1 笔") {
-		t.Fatalf("expected projected cash limit reason, got %q", reason)
+	if len(capacity.Bottlenecks) != 1 || capacity.Bottlenecks[0] != "最大投入金额" {
+		t.Fatalf("expected exposure bottleneck, got %#v", capacity.Bottlenecks)
 	}
-	if len(bottlenecks) == 0 || bottlenecks[0] != "现金使用上限" {
-		t.Fatalf("expected cash limit bottleneck, got %#v", bottlenecks)
+}
+
+func TestEstimateBuyCapacityReportsAllTiedBottlenecks(t *testing.T) {
+	stock := StockConfig{
+		Symbol:        "AAPL.US",
+		MaxLots:       2,
+		OrderQuantity: 10,
 	}
-	if len(limitTags) == 0 || limitTags[0].Label != "现金使用上限" {
-		t.Fatalf("expected cash limit tag, got %#v", limitTags)
+	funds := availableFunds{AvailableCash: mustDecimal(t, "200")}
+
+	capacity := estimateBuyCapacity(stock, PositionSnapshot{}, mustDecimal(t, "10"), funds, decimal.Zero)
+	if capacity.RemainingLots != 2 {
+		t.Fatalf("expected remaining lots 2, got %d", capacity.RemainingLots)
+	}
+	if len(capacity.Bottlenecks) != 2 {
+		t.Fatalf("expected two bottlenecks, got %#v", capacity.Bottlenecks)
 	}
 }
 
@@ -244,7 +243,7 @@ func TestEstimateBuyCapacityShowsCashAndMarginLots(t *testing.T) {
 		RemainingMargin: mustDecimal(t, "250"),
 	}
 
-	capacity := estimateBuyCapacity(stock, position, mustDecimal(t, "10"), funds, decimal.Zero, CashLimitModeUsed)
+	capacity := estimateBuyCapacity(stock, position, mustDecimal(t, "10"), funds, decimal.Zero)
 	reason, details, detailTags := capacity.Reason, capacity.Details, capacity.DetailTags
 	if !strings.Contains(reason, "现金可买 1 笔") {
 		t.Fatalf("expected cash lots in reason, got %q", reason)
@@ -276,7 +275,7 @@ func TestEstimateBuyCapacityClampsNegativeLotsToZero(t *testing.T) {
 		RemainingMargin: mustDecimal(t, "-5000"),
 	}
 
-	capacity := estimateBuyCapacity(stock, position, mustDecimal(t, "127.233"), funds, decimal.Zero, CashLimitModeUsed)
+	capacity := estimateBuyCapacity(stock, position, mustDecimal(t, "127.233"), funds, decimal.Zero)
 	remainingLots, reason, details, detailTags := capacity.RemainingLots, capacity.Reason, capacity.Details, capacity.DetailTags
 	if remainingLots != 0 {
 		t.Fatalf("expected remaining lots 0, got %d", remainingLots)
@@ -295,63 +294,45 @@ func TestEstimateBuyCapacityClampsNegativeLotsToZero(t *testing.T) {
 	}
 }
 
-func TestEnsureBuyCapacityStopsWhenCashLimitReached(t *testing.T) {
+func TestEnsureBuyCapacityStopsWhenExposureReached(t *testing.T) {
 	engine := &Engine{
 		cfg: &Config{
 			Engine: EngineConfig{
-				CashLimit: decimal.RequireFromString("800"),
+				MaxExposure: decimal.RequireFromString("800"),
 			},
 		},
 	}
 
-	err := engine.ensureBuyCapacity(context.Background(), StockConfig{OrderQuantity: 10}, PositionSnapshot{}, mustDecimal(t, "10"), availableFunds{
-		TotalCash:     mustDecimal(t, "1000"),
-		AvailableCash: mustDecimal(t, "200"),
+	err := engine.ensureBuyCapacity(context.Background(), StockConfig{OrderQuantity: 10}, mustDecimal(t, "10"), availableFunds{
+		Deployed: mustDecimal(t, "800"),
 	}, nil)
 	if err == nil {
-		t.Fatal("expected cash limit error")
+		t.Fatal("expected exposure error")
 	}
-	if !strings.Contains(err.Error(), "已达到全局上限") {
+	if !strings.Contains(err.Error(), "已达到最大投入金额") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestBuildCashLimitSnapshotReached(t *testing.T) {
-	snapshot := buildCashLimitSnapshot(mustDecimal(t, "800"), CashLimitModeUsed, availableFunds{
-		TotalCash:     mustDecimal(t, "1000"),
-		AvailableCash: mustDecimal(t, "200"),
-	}, nil)
+func TestBuildExposureSnapshotReached(t *testing.T) {
+	snapshot := buildExposureSnapshot(mustDecimal(t, "800"), availableFunds{Deployed: mustDecimal(t, "800")}, nil)
 
 	if !snapshot.Enabled {
-		t.Fatal("expected cash limit enabled")
+		t.Fatal("expected exposure limit enabled")
 	}
 	if !snapshot.Reached {
-		t.Fatal("expected cash limit reached")
+		t.Fatal("expected exposure limit reached")
 	}
 	if snapshot.Used != "800.0000" {
-		t.Fatalf("expected used cash 800.0000, got %q", snapshot.Used)
+		t.Fatalf("expected used 800.0000, got %q", snapshot.Used)
 	}
 	if snapshot.Message != "已触发，停止买入" {
 		t.Fatalf("unexpected message: %q", snapshot.Message)
 	}
 }
 
-func TestBuildCashLimitSnapshotProjectedMode(t *testing.T) {
-	snapshot := buildCashLimitSnapshot(mustDecimal(t, "900"), CashLimitModeProjected, availableFunds{
-		TotalCash:     mustDecimal(t, "1000"),
-		AvailableCash: mustDecimal(t, "200"),
-	}, nil)
-
-	if snapshot.Mode != CashLimitModeProjected {
-		t.Fatalf("expected projected mode, got %q", snapshot.Mode)
-	}
-	if !strings.Contains(snapshot.Message, "下一笔买入后") {
-		t.Fatalf("unexpected message: %q", snapshot.Message)
-	}
-}
-
-func TestBuildCashLimitSnapshotDisabled(t *testing.T) {
-	snapshot := buildCashLimitSnapshot(decimal.Zero, CashLimitModeUsed, availableFunds{}, nil)
+func TestBuildExposureSnapshotDisabled(t *testing.T) {
+	snapshot := buildExposureSnapshot(decimal.Zero, availableFunds{}, nil)
 
 	if snapshot.Enabled {
 		t.Fatal("expected cash limit disabled")

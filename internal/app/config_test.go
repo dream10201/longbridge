@@ -32,7 +32,6 @@ sell_percent = "1"
 buy_percent = "1"
 min_profit = "0"
 use_margin = false
-max_margin = "0"
 max_lots = 1
 order_quantity = 1
 remark = "longbridge-aapl"
@@ -77,7 +76,6 @@ sell_percent = "1"
 buy_percent = "1"
 min_profit = "0"
 use_margin = false
-max_margin = "0"
 max_lots = 1
 order_quantity = 1
 remark = "longbridge-aapl"
@@ -98,7 +96,7 @@ enabled = true
 	}
 }
 
-func TestLoadConfigParsesCashLimit(t *testing.T) {
+func TestLoadConfigParsesMaxExposure(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.toml")
 	content := `
@@ -108,8 +106,7 @@ port = 8080
 
 [engine]
 dry_run = true
-cash_limit = "1234.56"
-cash_limit_mode = "projected"
+max_exposure = "1234.56"
 
 [[stocks]]
 symbol = "AAPL.US"
@@ -118,7 +115,6 @@ sell_percent = "1"
 buy_percent = "1"
 min_profit = "0"
 use_margin = false
-max_margin = "0"
 max_lots = 1
 order_quantity = 1
 remark = "longbridge-aapl"
@@ -134,15 +130,53 @@ enabled = true
 	}
 
 	want := decimal.RequireFromString("1234.56")
-	if !cfg.Engine.CashLimit.Equal(want) {
-		t.Fatalf("expected cash limit %s, got %s", want, cfg.Engine.CashLimit)
+	if !cfg.Engine.MaxExposure.Equal(want) {
+		t.Fatalf("expected max exposure %s, got %s", want, cfg.Engine.MaxExposure)
 	}
-	if cfg.Engine.CashLimitMode != CashLimitModeProjected {
-		t.Fatalf("expected cash limit mode %q, got %q", CashLimitModeProjected, cfg.Engine.CashLimitMode)
+	if len(cfg.Warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", cfg.Warnings)
 	}
 }
 
-func TestConfigValidateRejectsNegativeCashLimit(t *testing.T) {
+func TestLoadConfigAcceptsLegacyCashLimitWithWarnings(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	content := `
+[server]
+port = 8080
+
+[engine]
+cash_limit = "500"
+cash_limit_mode = "used"
+unknown_key = 1
+
+[[stocks]]
+symbol = "AAPL.US"
+initial_price = "100"
+sell_percent = "1"
+buy_percent = "1"
+min_profit = "0"
+max_margin = "0"
+max_lots = 1
+order_quantity = 1
+remark = "longbridge-aapl"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	if !cfg.Engine.MaxExposure.Equal(decimal.RequireFromString("500")) {
+		t.Fatalf("expected legacy cash_limit to map to max_exposure, got %s", cfg.Engine.MaxExposure)
+	}
+	if len(cfg.Warnings) != 4 {
+		t.Fatalf("expected 4 warnings, got %v", cfg.Warnings)
+	}
+}
+
+func TestConfigValidateRejectsNegativeMaxExposure(t *testing.T) {
 	cfg := &Config{
 		Server: ServerConfig{
 			Host: "127.0.0.1",
@@ -155,7 +189,7 @@ func TestConfigValidateRejectsNegativeCashLimit(t *testing.T) {
 			TradeAPIWindow:           5,
 			TradeAPIMaxCalls:         1,
 			TradeAPIMinGap:           1,
-			CashLimit:                decimal.RequireFromString("-1"),
+			MaxExposure:              decimal.RequireFromString("-1"),
 		},
 		Stocks: []StockConfig{{
 			Symbol:        "AAPL.US",
@@ -171,7 +205,7 @@ func TestConfigValidateRejectsNegativeCashLimit(t *testing.T) {
 	}
 
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validate error for negative cash limit")
+		t.Fatal("expected validate error for negative max exposure")
 	}
 }
 
@@ -207,7 +241,6 @@ func validTestConfig() *Config {
 			TradeAPIWindow:           5,
 			TradeAPIMaxCalls:         1,
 			TradeAPIMinGap:           1,
-			CashLimitMode:            CashLimitModeUsed,
 		},
 		Stocks: []StockConfig{{
 			Symbol:        "AAPL.US",

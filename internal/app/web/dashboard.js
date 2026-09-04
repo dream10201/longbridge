@@ -357,7 +357,6 @@
 
     function renderOpsStrip(status) {
       const margins = marginSymbols(status);
-      const cashLimit = status.cash_limit || {};
       const token = status.access_token || {};
       const market = status.market || {};
       const tokenFailed = token.last_refresh_state === "error" || token.last_refresh_state === "missing";
@@ -380,16 +379,20 @@
       const sessionRange = fmtShortDate(market.open_time) + " - " + fmtShortDate(market.close_time);
       const realOrderClass = status.dry_run ? "warn" : "danger";
       const configText = status.config_reloaded_at ? fmtDate(status.config_reloaded_at) : "启动后未热加载";
-      let cashLimitValue = "未启用";
-      let cashLimitSub = esc(cashLimit.message || "未启用");
-      let cashLimitClass = "warn";
-      if (cashLimit.enabled) {
-        cashLimitClass = cashLimit.reached ? "danger" : "ok";
-        cashLimitValue = (cashLimit.used && cashLimit.limit)
-          ? fmtNumber(cashLimit.used) + " / " + fmtNumber(cashLimit.limit)
-          : (cashLimit.limit ? "上限 " + fmtNumber(cashLimit.limit) : "已启用");
-        cashLimitSub = (cashLimit.remaining ? "剩余 " + fmtNumber(cashLimit.remaining) + " · " : "") + esc(cashLimit.message || "-");
+      const exposure = status.exposure || {};
+      const usd = (status.account_balances || []).find((account) => account.currency === "USD") || {};
+      const usdCash = (usd.cash_infos || [])[0] || {};
+      let exposureValue = "未启用";
+      let exposureClass = "warn";
+      if (exposure.enabled) {
+        exposureClass = exposure.reached ? "danger" : "ok";
+        exposureValue = (exposure.used && exposure.limit)
+          ? fmtNumber(exposure.used) + " / " + fmtNumber(exposure.limit)
+          : (exposure.limit ? "上限 " + fmtNumber(exposure.limit) : "已启用");
       }
+      const exposureSub = status.account_error
+        ? esc(status.account_error)
+        : "可用现金 " + fmtNumber(usdCash.available_cash) + " · 剩余融资 " + fmtNumber(usd.remaining_finance_amount) + " · 购买力 " + fmtNumber(usd.buy_power);
       document.getElementById("ops-strip").innerHTML =
         '<div class="ops-item risk">' +
           '<div class="ops-label">下单模式</div>' +
@@ -397,7 +400,7 @@
           '<div class="ops-sub">融资标的 ' + margins.length + ' 个</div>' +
         '</div>' +
         '<div class="ops-item"><div class="ops-label">美股市场</div><div class="ops-value ' + openClass + '">' + esc(phase) + ' / ' + marketState + '</div><div class="ops-sub">常规交易 ' + sessionRange + '</div></div>' +
-        '<div class="ops-item"><div class="ops-label">现金使用上限</div><div class="ops-value ' + cashLimitClass + '">' + cashLimitValue + '</div><div class="ops-sub">' + cashLimitSub + '</div></div>' +
+        '<div class="ops-item"><div class="ops-label">已投入 / 最大投入</div><div class="ops-value ' + exposureClass + '">' + exposureValue + '</div><div class="ops-sub">' + exposureSub + '</div></div>' +
         '<div class="ops-item"><div class="ops-label">访问令牌</div><div class="ops-value ' + tokenClass + '">' + tokenText + '</div><div class="ops-sub">' + tokenSub + '</div></div>' +
         '<div class="ops-item"><div class="ops-label">配置</div><div class="ops-value">' + esc(configText) + '</div><div class="ops-sub"><code>' + esc(status.config_path || '-') + '</code></div></div>';
     }
@@ -467,7 +470,7 @@
         '<div class="label">账户资产</div>' +
         '<table>' +
           '<thead><tr>' +
-            '<th>币种</th><th>总现金</th><th>可用现金</th><th>可取现金</th><th>冻结现金</th><th>在途结算</th><th>最大融资</th><th>剩余融资</th><th>净资产</th><th>风险等级</th>' +
+            '<th>币种</th><th>总现金</th><th>可用现金</th><th>可取现金</th><th>冻结现金</th><th>在途结算</th><th>最大融资</th><th>剩余融资</th><th>购买力</th><th>净资产</th><th>风险等级</th>' +
           '</tr></thead>' +
           '<tbody>' +
             accounts.map((account) => {
@@ -481,6 +484,7 @@
                 '<td data-label="在途结算">' + fmtNumber(cash.settling_cash) + '</td>' +
                 '<td data-label="最大融资">' + fmtNumber(account.max_finance_amount) + '</td>' +
                 '<td data-label="剩余融资">' + fmtNumber(account.remaining_finance_amount) + '</td>' +
+                '<td data-label="购买力">' + fmtNumber(account.buy_power) + '</td>' +
                 '<td data-label="净资产">' + fmtNumber(account.net_assets) + '</td>' +
                 '<td data-label="风险等级">' + esc(account.risk_level || "-") + '</td>' +
               '</tr>';
@@ -526,9 +530,7 @@
 	        : '当前无挂单';
 	      const buyDistanceTone = distanceTone(buyView.delta, true);
 	      const sellDistanceTone = distanceTone(sellView.delta, false);
-      const marginText = stock.use_margin
-        ? (toNumber(stock.max_margin) > 0 ? '允许融资 / 名义上限 ' + fmtNumber(stock.max_margin) : '允许融资 / 无单股名义上限')
-        : '仅现金买入';
+      const marginText = stock.use_margin ? '允许融资' : '仅现金买入';
       return '' +
         '<article class="card stock-card priority-' + esc(preview.kind) + '">' +
           '<div class="stock-head">' +

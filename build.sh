@@ -8,9 +8,12 @@ PATCH_DIR=third_party/patches
 
 build() {
 	rm -f longbridge
+	go build -ldflags="-s -w" -o longbridge
+}
+
+update_deps() {
 	go get -u ./...
 	go mod tidy
-	go build -ldflags="-s -w" -o longbridge
 }
 
 sdk_latest_tag() {
@@ -48,10 +51,11 @@ patch_sdk() {
 
 case "${1:-build}" in
 build) build ;;
+update-deps) update_deps ;;
 update-sdk) update_sdk "${2:-}" ;;
 patch-sdk) patch_sdk ;;
 *)
-	echo "用法: $0 [build | update-sdk [go/vX.Y.Z] | patch-sdk]" >&2
+	echo "用法: $0 [build | update-deps | update-sdk [go/vX.Y.Z] | patch-sdk]" >&2
 	exit 1
 	;;
 esac

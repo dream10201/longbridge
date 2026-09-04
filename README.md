@@ -11,7 +11,7 @@ main.go                 启动入口：加载配置 → 初始化引擎 → 起 
 config.toml             运行配置（监听地址、引擎参数、多只股票）
 state.json              本地状态持久化（买卖锚点、追踪状态、挂单）
 .env                    LongPort 凭证（App Key / Secret / Access Token）
-build.sh                构建脚本
+build.sh                构建脚本（build / update-deps / update-sdk / patch-sdk）
 internal/app/
 ├── config.go           配置解析与校验
 ├── auth.go             Access Token 临期自动刷新，并写回 .env
@@ -63,7 +63,7 @@ docker compose up -d --build
 http://127.0.0.1:20017/
 ```
 
-面板展示：市场时段、各股持仓 / 成本 / 现价、下一个买卖触发价、追踪状态、挂单与超时倒计时、最近成交、账户资金、现金上限使用情况、Access Token 刷新状态。`/api/status` 返回同样数据的 JSON。
+面板展示：市场时段、各股持仓 / 成本 / 现价、下一个买卖触发价、追踪状态、挂单与超时倒计时、最近成交、账户资金（现金 / 融资 / 购买力）、已投入与最大投入金额、Access Token 刷新状态。`/api/status` 返回同样数据的 JSON。
 
 ## 策略说明
 
@@ -118,17 +118,16 @@ http://127.0.0.1:20017/
 | `order_timeout` | 挂单超时自动撤单 | `90s` |
 | `state_file` | 状态持久化文件；运行中不热切换 | `state.json` |
 | `dry_run` | `true` 只演练不下单 | `false` |
-| `cash_limit` | 全局现金使用上限；`0` 关闭 | `0` |
-| `cash_limit_mode` | `used` / `projected`（见下） | `used` |
+| `max_exposure` | 最大投入金额（现金 + 融资合计）；`0` 关闭 | `0` |
 | `access_token_auto_refresh` | 临期自动刷新 token | `true` |
 | `access_token_refresh_before` | 提前多久刷新 | `1h` |
 | `access_token_env_file` | 新 token 写回的 `.env` 路径 | `.env` |
 | `trade_api_window` / `trade_api_max_calls` / `trade_api_min_gap` | 交易接口限频 | `30s` / `30` / `25ms` |
 | `quote_request_timeout` | 单次请求超时 | `15s` |
 
-- `cash_limit_mode = "used"`：当前已用现金 ≥ `cash_limit` 时停止买入
-- `cash_limit_mode = "projected"`：本次买入后已用现金会超过 `cash_limit` 时也提前停止
-- 「已用现金」按本程序启用股票的当前持仓名义 + 待成交买单名义估算（strategy exposure）
+- 「已投入」按本程序启用股票的持仓成本（成本价 × 数量）+ 待成交买单金额统计，不随股价波动
+- 已投入 ≥ `max_exposure`，或本次买入后会超过 `max_exposure` 时停止买入；同一轮内多只股票依次扣减额度
+- 旧字段 `cash_limit` 仍可读取并映射到 `max_exposure`，`cash_limit_mode` 已移除，启动时会打印警告
 
 ### `[[stocks]]`（每只股票一个）
 
@@ -140,7 +139,7 @@ http://127.0.0.1:20017/
 | `trail_percent` | 追踪阈值百分比：卖出时为从最高价回撤、买入时为从最低价反弹；默认 `1.0` |
 | `buy_percent` | 基础补仓阈值百分比，会按持仓笔数放大 |
 | `min_profit` | 单笔卖出预估毛利下限，未达到不卖 |
-| `use_margin` / `max_margin` | 是否允许融资；`max_margin` 限制该股最大名义持仓（仅 `use_margin=true` 生效） |
+| `use_margin` | 是否允许融资买入；`false` 时仅在现金足够一笔时下单。旧字段 `max_margin` 已移除 |
 | `max_lots` | 单只最多持有笔数；总持仓 = `max_lots × order_quantity` |
 | `order_quantity` | 每笔下单数量；须为券商 lot size 整数倍 |
 | `remark` | 启用股票必须配置且全局唯一，用于从券商侧恢复本程序挂单 |
@@ -148,14 +147,14 @@ http://127.0.0.1:20017/
 
 ## 风控与健壮性
 
-- **多重买入约束**：`max_lots`（笔数）、`cash_limit`（全局现金）、`max_margin`（融资名义）、券商 `EstimateMaxPurchaseQuantity`（实际购买力）、`min_profit`（卖出利润下限）
+- **多重买入约束**：`max_lots`（笔数）、`max_exposure`（全局投入金额）、券商 `EstimateMaxPurchaseQuantity`（实际购买力）、`min_profit`（卖出利润下限）
 - **挂单超时撤单**、**重复下单保护**、**券商侧挂单恢复**
 - **崩溃自愈**：单轮 panic 被 `recover` 捕获并记录，会话失效 / token 刷新后自动重建 LongPort 客户端
 - **自适应轮询**：盘外、临近开盘、有挂单、token 临期时动态调整轮询间隔，节省 API 调用
 - **配置热加载**：检测 `config.toml` 修改时间变化即重载（监听地址、状态文件除外）
-- **状态原子写入**：`state.json` 通过临时文件 + rename 替换
+- **状态原子写入**：`state.json` 和 `.env` 通过临时文件 + rename 替换；挂单提交 / 成交后立即落盘
 
-> 注意：这是网格补仓策略，**没有止损**。单边下跌中会持续补仓到 `max_lots` 后套牢；风险由 `max_lots`、`cash_limit`、`max_margin` 共同约束，请据此设置仓位上限。
+> 注意：这是网格补仓策略，**没有止损**。单边下跌中会持续补仓到 `max_lots` 后套牢；风险由 `max_lots`、`max_exposure` 共同约束，请据此设置仓位上限。
 
 ## 注意事项
 

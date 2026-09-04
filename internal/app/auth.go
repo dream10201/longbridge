@@ -316,7 +316,7 @@ func writeAccessTokenEnvFile(path string, token string) error {
 		updated = longbridgeAccessTokenKey + "=" + token + "\n"
 	}
 
-	if err := os.WriteFile(absPath, []byte(updated), 0600); err != nil {
+	if err := writeFileAtomic(absPath, []byte(updated), 0o600); err != nil {
 		return fmt.Errorf("写入 env 文件失败: %w", err)
 	}
 	return nil

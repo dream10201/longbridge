@@ -4,39 +4,35 @@ import (
 	"context"
 	"fmt"
 
-	openapi "github.com/longbridge/openapi-go"
-	lbtrade "github.com/longbridge/openapi-go/trade"
-	"github.com/shopspring/decimal"
-
 	"strconv"
 	"strings"
 	"time"
+
+	openapi "github.com/longbridge/openapi-go"
+	lbtrade "github.com/longbridge/openapi-go/trade"
+	"github.com/shopspring/decimal"
 )
 
-const (
-	CashLimitModeUsed      = "used"
-	CashLimitModeProjected = "projected"
-)
-
-func (e *Engine) placeOrder(ctx context.Context, stock StockConfig, position PositionSnapshot, currentPrice decimal.Decimal, decision Decision, funds availableFunds, accountErr error) error {
+func (e *Engine) placeOrder(ctx context.Context, stock StockConfig, currentPrice decimal.Decimal, decision Decision, funds availableFunds, accountErr error) error {
 	price := resolveOrderPrice(decision, currentPrice)
 	if !price.IsPositive() {
 		return fmt.Errorf("订单价格无效")
 	}
 
 	if decision.Action == ActionBuy {
-		if err := e.ensureBuyCapacity(ctx, stock, position, price, funds, accountErr); err != nil {
+		if err := e.ensureBuyCapacity(ctx, stock, price, funds, accountErr); err != nil {
 			return err
 		}
 	}
 
 	if e.cfg.Engine.DryRun {
-		return e.state.Update(stock.Symbol, func(s *SymbolState) {
+		e.state.Update(stock.Symbol, func(s *SymbolState) {
 			s.LastDecision = fmt.Sprintf("[dry-run] 将以 %.2f 提交%s单，原因: %s", price.InexactFloat64(), strings.ToUpper(string(decision.Action)), decision.Reason)
 			s.LastOrderStatus = displayOrderStatus("DRY_RUN")
 			s.LastOrderMsg = "未实际提交订单"
 			s.LastError = ""
 		})
+		return nil
 	}
 
 	params := &lbtrade.SubmitOrder{
@@ -61,7 +57,7 @@ func (e *Engine) placeOrder(ctx context.Context, stock StockConfig, position Pos
 
 	e.logger.Printf("%s 提交%s单成功: order_id=%s price=%s qty=%d", stock.Symbol, decision.Action, orderID, price.StringFixed(2), stock.OrderQuantity)
 
-	return e.state.Update(stock.Symbol, func(s *SymbolState) {
+	e.state.Update(stock.Symbol, func(s *SymbolState) {
 		s.Pending = &PendingOrderState{
 			OrderID:        orderID,
 			Side:           decision.Action,
@@ -74,6 +70,18 @@ func (e *Engine) placeOrder(ctx context.Context, stock StockConfig, position Pos
 		s.LastOrderMsg = ""
 		s.LastError = ""
 	})
+	e.flushState()
+	return nil
+}
+
+// flushState 在挂单/成交等关键状态变化后立即落盘,避免硬崩溃丢失网格锚点。
+func (e *Engine) flushState() {
+	if e.state == nil {
+		return
+	}
+	if err := e.state.Flush(); err != nil && e.logger != nil {
+		e.logger.Printf("写入状态文件失败: %v", err)
+	}
 }
 
 func resolveOrderPrice(decision Decision, currentPrice decimal.Decimal) decimal.Decimal {
@@ -90,21 +98,14 @@ func resolveOrderPrice(decision Decision, currentPrice decimal.Decimal) decimal.
 	return price
 }
 
-func (e *Engine) ensureBuyCapacity(ctx context.Context, stock StockConfig, position PositionSnapshot, price decimal.Decimal, funds availableFunds, accountErr error) error {
-	if e.cfg.Engine.CashLimit.IsPositive() {
+func (e *Engine) ensureBuyCapacity(ctx context.Context, stock StockConfig, price decimal.Decimal, funds availableFunds, accountErr error) error {
+	if e.cfg.Engine.MaxExposure.IsPositive() {
 		if accountErr != nil {
-			return fmt.Errorf("账户资金读取失败，无法校验现金使用上限: %w", accountErr)
+			return fmt.Errorf("账户资金读取失败，无法校验最大投入金额: %w", accountErr)
 		}
 		orderNotional := price.Mul(decimal.NewFromInt(stock.OrderQuantity))
-		if blocked, reason := cashLimitBuyBlockReason(funds, e.cfg.Engine.CashLimit, e.cfg.Engine.CashLimitMode, orderNotional); blocked {
+		if blocked, reason := exposureBlockReason(funds, e.cfg.Engine.MaxExposure, orderNotional); blocked {
 			return fmt.Errorf("%s", reason)
-		}
-	}
-
-	if stock.UseMargin && stock.MaxMargin.GreaterThan(decimal.Zero) {
-		nextNotional := price.Mul(decimal.NewFromInt(position.Quantity + stock.OrderQuantity))
-		if nextNotional.GreaterThan(stock.MaxMargin) {
-			return fmt.Errorf("启用融资时，下一笔后名义持仓 %.2f 超过 max_margin %.2f", nextNotional.InexactFloat64(), stock.MaxMargin.InexactFloat64())
 		}
 	}
 
@@ -129,43 +130,37 @@ func (e *Engine) ensureBuyCapacity(ctx context.Context, stock StockConfig, posit
 	return nil
 }
 
-func applyGlobalBuyConstraints(decision Decision, funds availableFunds, accountErr error, cashLimit decimal.Decimal, mode string, orderNotional decimal.Decimal) Decision {
-	if decision.Action != ActionBuy || !cashLimit.IsPositive() {
+func applyGlobalBuyConstraints(decision Decision, funds availableFunds, accountErr error, maxExposure decimal.Decimal, orderNotional decimal.Decimal) Decision {
+	if decision.Action != ActionBuy || !maxExposure.IsPositive() {
 		return decision
 	}
 	if accountErr != nil {
 		decision.Action = ActionNone
-		decision.Reason = "账户资金读取失败，无法校验现金使用上限，已禁止买入"
+		decision.Reason = "账户资金读取失败，无法校验最大投入金额，已禁止买入"
 		return decision
 	}
 
-	if blocked, reason := cashLimitBuyBlockReason(funds, cashLimit, mode, orderNotional); blocked {
+	if blocked, reason := exposureBlockReason(funds, maxExposure, orderNotional); blocked {
 		decision.Action = ActionNone
 		decision.Reason = reason + "，停止买入"
 	}
 	return decision
 }
 
-func cashLimitBuyBlockReason(funds availableFunds, limit decimal.Decimal, mode string, orderNotional decimal.Decimal) (bool, string) {
-	usedCash := funds.UsedCash()
-	if !usedCash.LessThan(limit) {
-		return true, fmt.Sprintf("当前已用现金 %.4f 已达到全局上限 %.4f", usedCash.InexactFloat64(), limit.InexactFloat64())
+// exposureBlockReason 判断本次买入后总投入是否会超过上限。
+func exposureBlockReason(funds availableFunds, limit decimal.Decimal, orderNotional decimal.Decimal) (bool, string) {
+	deployed := funds.Deployed
+	if !deployed.LessThan(limit) {
+		return true, fmt.Sprintf("当前已投入 %.4f 已达到最大投入金额 %.4f", deployed.InexactFloat64(), limit.InexactFloat64())
 	}
-	if normalizeCashLimitMode(mode) != CashLimitModeProjected || !orderNotional.IsPositive() {
+	if !orderNotional.IsPositive() {
 		return false, ""
 	}
-	projected := usedCash.Add(orderNotional)
+	projected := deployed.Add(orderNotional)
 	if projected.GreaterThan(limit) {
-		return true, fmt.Sprintf("本次买入后已用现金 %.4f 将超过全局上限 %.4f", projected.InexactFloat64(), limit.InexactFloat64())
+		return true, fmt.Sprintf("本次买入后总投入 %.4f 将超过最大投入金额 %.4f", projected.InexactFloat64(), limit.InexactFloat64())
 	}
 	return false, ""
-}
-
-func normalizeCashLimitMode(mode string) string {
-	if mode == CashLimitModeProjected {
-		return CashLimitModeProjected
-	}
-	return CashLimitModeUsed
 }
 
 func (e *Engine) loadBrokerPendingOrders(ctx context.Context) (map[string]*lbtrade.Order, error) {
@@ -221,7 +216,7 @@ func (e *Engine) recoverPendingOrder(stock StockConfig, order *lbtrade.Order) er
 		submittedAt = parsed
 	}
 
-	return e.state.Update(stock.Symbol, func(s *SymbolState) {
+	e.state.Update(stock.Symbol, func(s *SymbolState) {
 		if s.Pending != nil && s.Pending.OrderID == order.OrderId {
 			return
 		}
@@ -237,6 +232,8 @@ func (e *Engine) recoverPendingOrder(stock StockConfig, order *lbtrade.Order) er
 		s.LastError = ""
 		s.LastDecision = fmt.Sprintf("检测到券商侧仍有活跃挂单，已恢复跟踪: %s", order.OrderId)
 	})
+	e.flushState()
+	return nil
 }
 
 func (e *Engine) syncPendingOrder(ctx context.Context, stock StockConfig, state SymbolState) (bool, error) {
@@ -255,20 +252,22 @@ func (e *Engine) syncPendingOrder(ctx context.Context, stock StockConfig, state 
 				return false, fmt.Errorf("撤单失败: %w", err)
 			}
 			e.logger.Printf("%s 挂单超时，已撤单: %s", stock.Symbol, state.Pending.OrderID)
-			return true, e.state.Update(stock.Symbol, func(s *SymbolState) {
+			e.state.Update(stock.Symbol, func(s *SymbolState) {
 				s.LastOrderStatus = displayOrderStatus(string(detail.Status))
 				s.LastOrderMsg = "挂单超时，已请求撤单"
 				s.LastDecision = "挂单超时，等待撤单结果"
 			})
+			return true, nil
 		}
-		return false, e.state.Update(stock.Symbol, func(s *SymbolState) {
+		e.state.Update(stock.Symbol, func(s *SymbolState) {
 			s.LastOrderStatus = displayOrderStatus(string(detail.Status))
 			s.LastOrderMsg = detail.Msg
 			s.LastError = ""
 		})
+		return false, nil
 	}
 
-	return true, e.state.Update(stock.Symbol, func(s *SymbolState) {
+	e.state.Update(stock.Symbol, func(s *SymbolState) {
 		s.LastOrderStatus = displayOrderStatus(string(detail.Status))
 		s.LastOrderMsg = detail.Msg
 		s.LastError = ""
@@ -316,6 +315,8 @@ func (e *Engine) syncPendingOrder(ctx context.Context, stock StockConfig, state 
 		}
 		s.Pending = nil
 	})
+	e.flushState()
+	return true, nil
 }
 
 func activeOrderStatuses() []lbtrade.OrderStatus {

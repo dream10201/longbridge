@@ -74,7 +74,7 @@ func (e *Engine) normalizeStateWithPosition(stock StockConfig, position Position
 	}
 
 	if changed {
-		_ = e.state.Update(stock.Symbol, func(s *SymbolState) {
+		e.state.Update(stock.Symbol, func(s *SymbolState) {
 			*s = state
 		})
 		return e.state.Get(stock.Symbol)
@@ -94,7 +94,7 @@ func (e *Engine) reconcileStrategyConfig(ctx context.Context, stock StockConfig,
 		if state.ConfigSignature == signature {
 			return state, false
 		}
-		_ = e.state.Update(stock.Symbol, func(s *SymbolState) {
+		e.state.Update(stock.Symbol, func(s *SymbolState) {
 			s.ConfigSignature = signature
 		})
 		return e.state.Get(stock.Symbol), false
@@ -107,7 +107,7 @@ func (e *Engine) reconcileStrategyConfig(ctx context.Context, stock StockConfig,
 
 	if state.Pending != nil {
 		if err := e.client.CancelOrder(ctx, state.Pending.OrderID); err != nil {
-			_ = e.state.Update(stock.Symbol, func(s *SymbolState) {
+			e.state.Update(stock.Symbol, func(s *SymbolState) {
 				s.ConfigSignature = signature
 				s.LastError = fmt.Sprintf("策略配置变化后撤销旧挂单失败: %v", err)
 				s.LastDecision = "检测到策略配置变化，但旧挂单撤销失败，暂停本轮下单"
@@ -115,7 +115,7 @@ func (e *Engine) reconcileStrategyConfig(ctx context.Context, stock StockConfig,
 			return e.state.Get(stock.Symbol), true
 		}
 		e.logger.Printf("%s 策略配置变化，已撤销旧挂单: %s", stock.Symbol, state.Pending.OrderID)
-		_ = e.state.Update(stock.Symbol, func(s *SymbolState) {
+		e.state.Update(stock.Symbol, func(s *SymbolState) {
 			s.ConfigSignature = signature
 			clearTrailingBuyState(s)
 			clearTrailingSellState(s)
@@ -126,7 +126,7 @@ func (e *Engine) reconcileStrategyConfig(ctx context.Context, stock StockConfig,
 		return e.state.Get(stock.Symbol), true
 	}
 
-	_ = e.state.Update(stock.Symbol, func(s *SymbolState) {
+	e.state.Update(stock.Symbol, func(s *SymbolState) {
 		s.ConfigSignature = signature
 		clearTrailingBuyState(s)
 		clearTrailingSellState(s)
@@ -203,7 +203,7 @@ func (e *Engine) updateTrailingBuyState(stock StockConfig, position PositionSnap
 		if !clearTrailingBuyState(&state) {
 			return state
 		}
-		_ = e.state.Update(stock.Symbol, func(s *SymbolState) {
+		e.state.Update(stock.Symbol, func(s *SymbolState) {
 			*s = state
 		})
 		return e.state.Get(stock.Symbol)
@@ -232,7 +232,7 @@ func (e *Engine) updateTrailingBuyState(stock StockConfig, position PositionSnap
 	if !changed {
 		return state
 	}
-	_ = e.state.Update(stock.Symbol, func(s *SymbolState) {
+	e.state.Update(stock.Symbol, func(s *SymbolState) {
 		*s = state
 	})
 	return e.state.Get(stock.Symbol)
@@ -252,7 +252,7 @@ func (e *Engine) updateTrailingSellState(stock StockConfig, position PositionSna
 		if !clearTrailingSellState(&state) {
 			return state
 		}
-		_ = e.state.Update(stock.Symbol, func(s *SymbolState) {
+		e.state.Update(stock.Symbol, func(s *SymbolState) {
 			*s = state
 		})
 		return e.state.Get(stock.Symbol)
@@ -275,7 +275,7 @@ func (e *Engine) updateTrailingSellState(stock StockConfig, position PositionSna
 	if !changed {
 		return state
 	}
-	_ = e.state.Update(stock.Symbol, func(s *SymbolState) {
+	e.state.Update(stock.Symbol, func(s *SymbolState) {
 		*s = state
 	})
 	return e.state.Get(stock.Symbol)

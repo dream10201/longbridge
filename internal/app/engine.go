@@ -43,7 +43,6 @@ type SymbolSnapshot struct {
 	Symbol                 string        `json:"symbol"`
 	Enabled                bool          `json:"enabled"`
 	UseMargin              bool          `json:"use_margin"`
-	MaxMargin              string        `json:"max_margin,omitempty"`
 	MaxLots                int64         `json:"max_lots"`
 	OrderQuantity          int64         `json:"order_quantity"`
 	Price                  string        `json:"price"`
@@ -114,16 +113,15 @@ type DashboardSnapshot struct {
 	ListenAddress    string                   `json:"listen_address"`
 	AccessToken      AccessTokenStatus        `json:"access_token"`
 	Market           MarketClock              `json:"market"`
-	CashLimit        CashLimitSnapshot        `json:"cash_limit"`
+	Exposure         ExposureSnapshot         `json:"exposure"`
 	Summary          DashboardSummary         `json:"summary"`
 	AccountBalances  []AccountBalanceSnapshot `json:"account_balances,omitempty"`
 	AccountError     string                   `json:"account_error,omitempty"`
 	Symbols          []SymbolSnapshot         `json:"symbols"`
 }
 
-type CashLimitSnapshot struct {
+type ExposureSnapshot struct {
 	Enabled   bool   `json:"enabled"`
-	Mode      string `json:"mode,omitempty"`
 	Limit     string `json:"limit,omitempty"`
 	Used      string `json:"used,omitempty"`
 	Remaining string `json:"remaining,omitempty"`
@@ -142,6 +140,7 @@ type AccountBalanceSnapshot struct {
 	TotalCash              string             `json:"total_cash,omitempty"`
 	MaxFinanceAmount       string             `json:"max_finance_amount,omitempty"`
 	RemainingFinanceAmount string             `json:"remaining_finance_amount,omitempty"`
+	BuyPower               string             `json:"buy_power,omitempty"`
 	NetAssets              string             `json:"net_assets,omitempty"`
 	InitMargin             string             `json:"init_margin,omitempty"`
 	MaintenanceMargin      string             `json:"maintenance_margin,omitempty"`
@@ -394,6 +393,19 @@ func (e *Engine) nextRunDelay(ctx context.Context) time.Duration {
 	)
 }
 
+// cycleContext 保存一轮轮询内各股票共享的市场与资金数据;资金在下单后同步扣减。
+type cycleContext struct {
+	ctx           context.Context
+	symbols       []string
+	marketClock   MarketClock
+	quotes        map[string]*lbquote.SecurityQuote
+	positions     map[string]PositionSnapshot
+	brokerPending map[string]*lbtrade.Order
+	funds         availableFunds
+	accountErr    error
+	summary       DashboardSummary
+}
+
 func (e *Engine) cycle(ctx context.Context) error {
 	e.reloadConfigIfChanged(ctx)
 
@@ -411,8 +423,7 @@ func (e *Engine) cycle(ctx context.Context) error {
 	reqCtx, cancel := context.WithTimeout(ctx, e.cfg.Engine.QuoteRequestTimeout)
 	defer cancel()
 
-	now := time.Now().UTC()
-	marketClock, err := e.loadMarketClock(reqCtx, now)
+	marketClock, err := e.loadMarketClock(reqCtx, time.Now().UTC())
 	if err != nil {
 		return err
 	}
@@ -431,280 +442,33 @@ func (e *Engine) cycle(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("获取持仓失败: %w", err)
 	}
-	positions := aggregatePositions(positionChannels)
 	accountBalances, accountErr := e.client.AccountBalance(reqCtx, &lbtrade.GetAccountBalance{Currency: lbtrade.CurrencyUSD})
-	accountSnapshots := make([]AccountBalanceSnapshot, 0, len(accountBalances))
-	funds := extractUSDFunds(accountBalances)
-	brokerPendingBySymbol, brokerPendingErr := e.loadBrokerPendingOrders(reqCtx)
+	brokerPending, brokerPendingErr := e.loadBrokerPendingOrders(reqCtx)
 	if brokerPendingErr != nil {
 		e.logger.Printf("读取券商活跃挂单失败: %v", brokerPendingErr)
 	}
-	funds.DeployedCash = e.strategyDeployedCash(positions, quoteBySymbol, marketClock.CurrentPhase)
-	cashLimitSnapshot := buildCashLimitSnapshot(e.cfg.Engine.CashLimit, e.cfg.Engine.CashLimitMode, funds, accountErr)
+
+	cc := &cycleContext{
+		ctx:           reqCtx,
+		symbols:       symbols,
+		marketClock:   marketClock,
+		quotes:        quoteBySymbol,
+		positions:     aggregatePositions(positionChannels),
+		brokerPending: brokerPending,
+		funds:         extractUSDFunds(accountBalances),
+		accountErr:    accountErr,
+	}
+	cc.funds.Deployed = e.strategyDeployed(cc.positions, quoteBySymbol, marketClock.CurrentPhase)
+	exposureSnapshot := buildExposureSnapshot(e.cfg.Engine.MaxExposure, cc.funds, accountErr)
+	accountSnapshots := make([]AccountBalanceSnapshot, 0, len(accountBalances))
 	if accountErr == nil {
 		accountSnapshots = buildAccountSnapshots(accountBalances)
 	}
 
 	snapshots := make([]SymbolSnapshot, 0, len(e.cfg.Stocks))
-	summary := DashboardSummary{}
 	for _, stock := range e.cfg.Stocks {
-		state := e.state.Get(stock.Symbol)
-		if state.Pending == nil {
-			if brokerOrder := brokerPendingBySymbol[stock.Symbol]; brokerOrder != nil {
-				if err := e.recoverPendingOrder(stock, brokerOrder); err != nil {
-					e.logger.Printf("%s 恢复券商挂单失败: %v", stock.Symbol, err)
-				} else {
-					state = e.state.Get(stock.Symbol)
-				}
-			}
-		}
-		if state.Pending != nil {
-			switch state.Pending.Side {
-			case ActionBuy:
-				summary.PendingBuySymbols = append(summary.PendingBuySymbols, stock.Symbol)
-			case ActionSell:
-				summary.PendingSellSymbols = append(summary.PendingSellSymbols, stock.Symbol)
-			}
-			terminal, syncErr := e.syncPendingOrder(reqCtx, stock, state)
-			if syncErr != nil {
-				e.logger.Printf("%s 同步挂单失败: %v", stock.Symbol, syncErr)
-				_ = e.state.Update(stock.Symbol, func(s *SymbolState) {
-					s.LastError = syncErr.Error()
-				})
-				state = e.state.Get(stock.Symbol)
-			} else if terminal {
-				state = e.state.Get(stock.Symbol)
-				positionChannels, err = e.client.StockPositions(reqCtx, symbols)
-				if err == nil {
-					positions = aggregatePositions(positionChannels)
-				}
-			}
-		}
-
-		quoteItem := quoteBySymbol[stock.Symbol]
-		price, hasPrice := currentPriceFromQuote(quoteItem, marketClock.CurrentPhase)
-		position := positions[stock.Symbol]
-		state = e.normalizeStateWithPosition(stock, position, state)
-		var costPtr *decimal.Decimal
-		if position.HasCost {
-			costCopy := position.CostPrice
-			costPtr = &costCopy
-		}
-		var configChanged bool
-		state, configChanged = e.reconcileStrategyConfig(reqCtx, stock, position, costPtr, state)
-
-		snapshot := SymbolSnapshot{
-			Symbol:          stock.Symbol,
-			Enabled:         stock.Enabled,
-			UseMargin:       stock.UseMargin,
-			MaxMargin:       stock.MaxMargin.StringFixed(4),
-			MaxLots:         stock.MaxLots,
-			OrderQuantity:   stock.OrderQuantity,
-			PositionQty:     position.Quantity,
-			AvailableQty:    position.Available,
-			LastAction:      state.LastAction,
-			LastBuyPrice:    state.LastBuyPrice,
-			LastSellPrice:   state.LastSellPrice,
-			LastOrderStatus: state.LastOrderStatus,
-			LastOrderMsg:    state.LastOrderMsg,
-			LastError:       state.LastError,
-			Remark:          stock.Remark,
-			Decision:        state.LastDecision,
-		}
-		if state.LastFilledAt != nil && !state.LastFilledAt.IsZero() {
-			snapshot.LastFilledAtText = formatDisplayTime(*state.LastFilledAt, e.displayTZ)
-			switch state.LastAction {
-			case ActionBuy:
-				snapshot.LastFilledPrice = state.LastBuyPrice
-			case ActionSell:
-				snapshot.LastFilledPrice = state.LastSellPrice
-			}
-		}
-		if hasPrice {
-			snapshot.Price = price.StringFixed(2)
-			snapshot.PositionNotional = price.Mul(decimal.NewFromInt(position.Quantity)).StringFixed(4)
-			snapshot.MaxPositionNotional = price.Mul(decimal.NewFromInt(stock.MaxLots * stock.OrderQuantity)).StringFixed(4)
-			change, changePct, trend, ok := quoteChange(quoteItem, marketClock.CurrentPhase)
-			if ok {
-				snapshot.PriceChange = change.StringFixed(2)
-				snapshot.PriceChangePct = changePct.StringFixed(2)
-				snapshot.PriceTrend = trend
-			}
-		}
-		if position.HasCost {
-			snapshot.CostPrice = position.CostPrice.StringFixed(4)
-		}
-		if state.Pending != nil {
-			snapshot.PendingOrderID = state.Pending.OrderID
-			snapshot.PendingSide = state.Pending.Side
-			snapshot.PendingPrice = state.Pending.SubmittedPrice
-			snapshot.PendingAt = &state.Pending.SubmittedAt
-			snapshot.PendingTimeoutLeft = formatTimeoutLeft(time.Until(state.Pending.SubmittedAt.Add(e.cfg.Engine.OrderTimeout)))
-			snapshot.Decision = pendingOrderDecisionText(state)
-			snapshots = append(snapshots, snapshot)
-			continue
-		}
-		if configChanged {
-			snapshot.Decision = state.LastDecision
-			snapshot.LastOrderStatus = state.LastOrderStatus
-			snapshot.LastOrderMsg = state.LastOrderMsg
-			snapshot.LastError = state.LastError
-			snapshots = append(snapshots, snapshot)
-			continue
-		}
-		if !stock.Enabled {
-			snapshot.Decision = "当前股票已禁用"
-			snapshots = append(snapshots, snapshot)
-			continue
-		}
-		if !hasPrice {
-			snapshot.Decision = "当前无有效行情价格"
-			snapshots = append(snapshots, snapshot)
-			continue
-		}
-
-		state = e.updateTrailingBuyState(stock, position, price, costPtr, state)
-		state = e.updateTrailingSellState(stock, position, price, costPtr, state)
-
-		decision := EvaluateStrategy(StrategyInput{
-			Config:       stock,
-			CurrentPrice: price,
-			PositionQty:  position.Quantity,
-			AvailableQty: position.Available,
-			CostPrice:    costPtr,
-			State:        state,
-			MarketOpen:   marketClock.Open,
-		})
-		preview := PreviewStrategy(StrategyInput{
-			Config:       stock,
-			CurrentPrice: price,
-			PositionQty:  position.Quantity,
-			AvailableQty: position.Available,
-			CostPrice:    costPtr,
-			State:        state,
-			MarketOpen:   marketClock.Open,
-		})
-		nextOrderNotional := decimal.Zero
-		if decision.Action == ActionBuy {
-			nextOrderNotional = resolveOrderPrice(decision, price).Mul(decimal.NewFromInt(stock.OrderQuantity))
-		}
-		decision = applyGlobalBuyConstraints(decision, funds, accountErr, e.cfg.Engine.CashLimit, e.cfg.Engine.CashLimitMode, nextOrderNotional)
-		snapshot.LastBuyPrice = state.LastBuyPrice
-		snapshot.LastSellPrice = state.LastSellPrice
-		snapshot.Decision = decision.Reason
-		if !decision.TriggerPrice.IsZero() {
-			snapshot.TriggerPrice = decision.TriggerPrice.StringFixed(4)
-		}
-		if !decision.ExpectedProfit.IsZero() {
-			snapshot.ExpectedProfit = decision.ExpectedProfit.StringFixed(4)
-		}
-		if preview.HasNextBuy {
-			baseTarget := preview.NextBuyPrice
-			if preview.NextBuyPercent.IsPositive() {
-				baseTarget = calcDownTarget(preview.NextBuyReference, preview.NextBuyPercent)
-			}
-			snapshot.NextBuyPrice = preview.NextBuyPrice.StringFixed(4)
-			snapshot.BaseBuyPrice = baseTarget.StringFixed(4)
-			snapshot.NextBuyRef = preview.NextBuyReference.StringFixed(4)
-			snapshot.NextBuyReason = preview.NextBuyReason
-			snapshot.BuyTrailPercent = stock.TrailPercent.StringFixed(2)
-			if preview.NextBuyPercent.IsPositive() {
-				snapshot.NextBuyPercent = preview.NextBuyPercent.StringFixed(2)
-			}
-			if state.BuyArmed {
-				snapshot.BuyTrailArmed = true
-				lowest := decimalStringPtr(state.BuyLowest)
-				if lowest != nil {
-					trailingTarget := calcUpTarget(*lowest, stock.TrailPercent)
-					snapshot.BuyTrailLowest = lowest.StringFixed(4)
-					snapshot.BuyTrailTrigger = decimalMin(baseTarget, trailingTarget).StringFixed(4)
-				}
-			}
-			if accountErr != nil {
-				if e.cfg.Engine.CashLimit.IsPositive() {
-					snapshot.BuyCapacityReason = "账户资金读取失败，无法校验现金使用上限，已禁止买入"
-					snapshot.BuyCapacityBottlenecks = []string{"现金使用上限"}
-					snapshot.BuyCapacityLimitTags = []CapacityTag{{Label: "现金使用上限", Kind: "funds"}}
-				} else {
-					snapshot.BuyCapacityReason = "账户资金读取失败，无法计算还能买几笔"
-				}
-			} else {
-				capacity := estimateBuyCapacity(stock, position, preview.NextBuyPrice, funds, e.cfg.Engine.CashLimit, e.cfg.Engine.CashLimitMode)
-				snapshot.RemainingBuyLots = capacity.RemainingLots
-				snapshot.NextBuyCashNeeded = capacity.CashNeeded.StringFixed(4)
-				if capacity.MarginUse.IsPositive() {
-					snapshot.NextBuyMarginUse = capacity.MarginUse.StringFixed(4)
-				} else {
-					snapshot.NextBuyMarginUse = "0.0000"
-				}
-				snapshot.BuyCapacityReason = capacity.Reason
-				snapshot.BuyCapacityDetails = capacity.Details
-				snapshot.BuyCapacityBottlenecks = capacity.Bottlenecks
-				snapshot.BuyCapacityDetailTags = capacity.DetailTags
-				snapshot.BuyCapacityLimitTags = capacity.LimitTags
-			}
-		}
-		if preview.HasNextSell {
-			baseTarget := calcUpTarget(preview.NextSellReference, stock.SellPercent)
-			snapshot.NextSellPrice = preview.NextSellPrice.StringFixed(4)
-			snapshot.BaseSellPrice = baseTarget.StringFixed(4)
-			snapshot.NextSellRef = preview.NextSellReference.StringFixed(4)
-			snapshot.NextSellProfit = preview.NextSellProfit.StringFixed(4)
-			snapshot.NextSellReason = preview.NextSellReason
-			snapshot.SellTrailPercent = stock.TrailPercent.StringFixed(2)
-			if state.SellArmed {
-				snapshot.SellTrailArmed = true
-				highest := decimalStringPtr(state.SellHighest)
-				if highest != nil {
-					trailingTarget := calcDownTarget(*highest, stock.TrailPercent)
-					snapshot.SellTrailHighest = highest.StringFixed(4)
-					snapshot.SellTrailTrigger = decimalMax(baseTarget, trailingTarget).StringFixed(4)
-				}
-			}
-		}
-
-		_ = e.state.Update(stock.Symbol, func(s *SymbolState) {
-			s.LastDecision = decision.Reason
-		})
-
-		if stock.Enabled {
-			if preview.HasNextBuy && snapshot.RemainingBuyLots == 0 {
-				summary.LimitedSymbols = append(summary.LimitedSymbols, stock.Symbol)
-			}
-		}
-
-		if decision.Action == ActionNone {
-			snapshots = append(snapshots, snapshot)
-			continue
-		}
-
-		if err := e.placeOrder(reqCtx, stock, position, price, decision, funds, accountErr); err != nil {
-			e.logger.Printf("%s 下单失败: %v", stock.Symbol, err)
-			_ = e.state.Update(stock.Symbol, func(s *SymbolState) {
-				s.LastError = err.Error()
-				s.LastDecision = decision.Reason
-			})
-			state = e.state.Get(stock.Symbol)
-			snapshot.LastError = state.LastError
-			snapshot.LastOrderStatus = state.LastOrderStatus
-			snapshot.LastOrderMsg = state.LastOrderMsg
-		} else {
-			state = e.state.Get(stock.Symbol)
-			if state.Pending != nil {
-				snapshot.PendingOrderID = state.Pending.OrderID
-				snapshot.PendingSide = state.Pending.Side
-				snapshot.PendingPrice = state.Pending.SubmittedPrice
-				snapshot.PendingAt = &state.Pending.SubmittedAt
-				snapshot.PendingTimeoutLeft = formatTimeoutLeft(time.Until(state.Pending.SubmittedAt.Add(e.cfg.Engine.OrderTimeout)))
-			}
-			snapshot.LastOrderStatus = state.LastOrderStatus
-			snapshot.LastOrderMsg = state.LastOrderMsg
-			snapshot.Decision = state.LastDecision
-		}
-
-		snapshots = append(snapshots, snapshot)
+		snapshots = append(snapshots, e.processSymbol(cc, stock))
 	}
-
 	sort.Slice(snapshots, func(i, j int) bool {
 		return snapshots[i].Symbol < snapshots[j].Symbol
 	})
@@ -714,8 +478,8 @@ func (e *Engine) cycle(ctx context.Context) error {
 	e.status.ConfigPath = e.cfg.FilePath
 	e.status.AccessToken = e.auth.Snapshot()
 	e.status.Market = marketClock
-	e.status.CashLimit = cashLimitSnapshot
-	e.status.Summary = summary
+	e.status.Exposure = exposureSnapshot
+	e.status.Summary = cc.summary
 	e.status.AccountBalances = accountSnapshots
 	if accountErr != nil {
 		e.status.AccountError = accountErr.Error()
@@ -725,6 +489,251 @@ func (e *Engine) cycle(ctx context.Context) error {
 	e.status.Symbols = snapshots
 	e.statusMu.Unlock()
 	return nil
+}
+
+// syncSymbolPending 恢复/同步该股票的挂单;挂单终态后重新拉取持仓。
+func (e *Engine) syncSymbolPending(cc *cycleContext, stock StockConfig) SymbolState {
+	state := e.state.Get(stock.Symbol)
+	if state.Pending == nil {
+		if brokerOrder := cc.brokerPending[stock.Symbol]; brokerOrder != nil {
+			if err := e.recoverPendingOrder(stock, brokerOrder); err != nil {
+				e.logger.Printf("%s 恢复券商挂单失败: %v", stock.Symbol, err)
+			} else {
+				state = e.state.Get(stock.Symbol)
+			}
+		}
+	}
+	if state.Pending == nil {
+		return state
+	}
+
+	switch state.Pending.Side {
+	case ActionBuy:
+		cc.summary.PendingBuySymbols = append(cc.summary.PendingBuySymbols, stock.Symbol)
+	case ActionSell:
+		cc.summary.PendingSellSymbols = append(cc.summary.PendingSellSymbols, stock.Symbol)
+	}
+	terminal, err := e.syncPendingOrder(cc.ctx, stock, state)
+	if err != nil {
+		e.logger.Printf("%s 同步挂单失败: %v", stock.Symbol, err)
+		e.state.Update(stock.Symbol, func(s *SymbolState) {
+			s.LastError = err.Error()
+		})
+	} else if terminal {
+		if channels, err := e.client.StockPositions(cc.ctx, cc.symbols); err == nil {
+			cc.positions = aggregatePositions(channels)
+		}
+	}
+	return e.state.Get(stock.Symbol)
+}
+
+func (e *Engine) processSymbol(cc *cycleContext, stock StockConfig) SymbolSnapshot {
+	state := e.syncSymbolPending(cc, stock)
+
+	quoteItem := cc.quotes[stock.Symbol]
+	price, hasPrice := currentPriceFromQuote(quoteItem, cc.marketClock.CurrentPhase)
+	position := cc.positions[stock.Symbol]
+	state = e.normalizeStateWithPosition(stock, position, state)
+	var costPtr *decimal.Decimal
+	if position.HasCost {
+		costCopy := position.CostPrice
+		costPtr = &costCopy
+	}
+	state, configChanged := e.reconcileStrategyConfig(cc.ctx, stock, position, costPtr, state)
+
+	snapshot := SymbolSnapshot{
+		Symbol:          stock.Symbol,
+		Enabled:         stock.Enabled,
+		UseMargin:       stock.UseMargin,
+		MaxLots:         stock.MaxLots,
+		OrderQuantity:   stock.OrderQuantity,
+		PositionQty:     position.Quantity,
+		AvailableQty:    position.Available,
+		LastAction:      state.LastAction,
+		LastBuyPrice:    state.LastBuyPrice,
+		LastSellPrice:   state.LastSellPrice,
+		LastOrderStatus: state.LastOrderStatus,
+		LastOrderMsg:    state.LastOrderMsg,
+		LastError:       state.LastError,
+		Remark:          stock.Remark,
+		Decision:        state.LastDecision,
+	}
+	if state.LastFilledAt != nil && !state.LastFilledAt.IsZero() {
+		snapshot.LastFilledAtText = formatDisplayTime(*state.LastFilledAt, e.displayTZ)
+		switch state.LastAction {
+		case ActionBuy:
+			snapshot.LastFilledPrice = state.LastBuyPrice
+		case ActionSell:
+			snapshot.LastFilledPrice = state.LastSellPrice
+		}
+	}
+	if hasPrice {
+		snapshot.Price = price.StringFixed(2)
+		snapshot.PositionNotional = price.Mul(decimal.NewFromInt(position.Quantity)).StringFixed(4)
+		snapshot.MaxPositionNotional = price.Mul(decimal.NewFromInt(stock.MaxLots * stock.OrderQuantity)).StringFixed(4)
+		if change, changePct, trend, ok := quoteChange(quoteItem, cc.marketClock.CurrentPhase); ok {
+			snapshot.PriceChange = change.StringFixed(2)
+			snapshot.PriceChangePct = changePct.StringFixed(2)
+			snapshot.PriceTrend = trend
+		}
+	}
+	if position.HasCost {
+		snapshot.CostPrice = position.CostPrice.StringFixed(4)
+	}
+	if state.Pending != nil {
+		e.fillPendingSnapshot(&snapshot, state)
+		snapshot.Decision = pendingOrderDecisionText(state)
+		return snapshot
+	}
+	if configChanged {
+		return snapshot
+	}
+	if !stock.Enabled {
+		snapshot.Decision = "当前股票已禁用"
+		return snapshot
+	}
+	if !hasPrice {
+		snapshot.Decision = "当前无有效行情价格"
+		return snapshot
+	}
+
+	state = e.updateTrailingBuyState(stock, position, price, costPtr, state)
+	state = e.updateTrailingSellState(stock, position, price, costPtr, state)
+
+	input := StrategyInput{
+		Config:       stock,
+		CurrentPrice: price,
+		PositionQty:  position.Quantity,
+		AvailableQty: position.Available,
+		CostPrice:    costPtr,
+		State:        state,
+		MarketOpen:   cc.marketClock.Open,
+	}
+	decision := EvaluateStrategy(input)
+	preview := PreviewStrategy(input)
+	orderNotional := decimal.Zero
+	if decision.Action == ActionBuy {
+		orderNotional = resolveOrderPrice(decision, price).Mul(decimal.NewFromInt(stock.OrderQuantity))
+	}
+	decision = applyGlobalBuyConstraints(decision, cc.funds, cc.accountErr, e.cfg.Engine.MaxExposure, orderNotional)
+	snapshot.LastBuyPrice = state.LastBuyPrice
+	snapshot.LastSellPrice = state.LastSellPrice
+	snapshot.Decision = decision.Reason
+	if !decision.TriggerPrice.IsZero() {
+		snapshot.TriggerPrice = decision.TriggerPrice.StringFixed(4)
+	}
+	if !decision.ExpectedProfit.IsZero() {
+		snapshot.ExpectedProfit = decision.ExpectedProfit.StringFixed(4)
+	}
+	if preview.HasNextBuy {
+		e.fillBuyPreview(&snapshot, cc, stock, position, state, preview)
+		if snapshot.RemainingBuyLots == 0 {
+			cc.summary.LimitedSymbols = append(cc.summary.LimitedSymbols, stock.Symbol)
+		}
+	}
+	if preview.HasNextSell {
+		fillSellPreview(&snapshot, stock, state, preview)
+	}
+
+	e.state.Update(stock.Symbol, func(s *SymbolState) {
+		s.LastDecision = decision.Reason
+	})
+
+	if decision.Action == ActionNone {
+		return snapshot
+	}
+
+	if err := e.placeOrder(cc.ctx, stock, price, decision, cc.funds, cc.accountErr); err != nil {
+		e.logger.Printf("%s 下单失败: %v", stock.Symbol, err)
+		e.state.Update(stock.Symbol, func(s *SymbolState) {
+			s.LastError = err.Error()
+			s.LastDecision = decision.Reason
+		})
+		state = e.state.Get(stock.Symbol)
+		snapshot.LastError = state.LastError
+		snapshot.LastOrderStatus = state.LastOrderStatus
+		snapshot.LastOrderMsg = state.LastOrderMsg
+		return snapshot
+	}
+	if decision.Action == ActionBuy {
+		cc.funds.applyBuy(orderNotional)
+	}
+	state = e.state.Get(stock.Symbol)
+	if state.Pending != nil {
+		e.fillPendingSnapshot(&snapshot, state)
+	}
+	snapshot.LastOrderStatus = state.LastOrderStatus
+	snapshot.LastOrderMsg = state.LastOrderMsg
+	snapshot.Decision = state.LastDecision
+	return snapshot
+}
+
+func (e *Engine) fillPendingSnapshot(snapshot *SymbolSnapshot, state SymbolState) {
+	snapshot.PendingOrderID = state.Pending.OrderID
+	snapshot.PendingSide = state.Pending.Side
+	snapshot.PendingPrice = state.Pending.SubmittedPrice
+	snapshot.PendingAt = &state.Pending.SubmittedAt
+	snapshot.PendingTimeoutLeft = formatTimeoutLeft(time.Until(state.Pending.SubmittedAt.Add(e.cfg.Engine.OrderTimeout)))
+}
+
+func (e *Engine) fillBuyPreview(snapshot *SymbolSnapshot, cc *cycleContext, stock StockConfig, position PositionSnapshot, state SymbolState, preview StrategyPreview) {
+	baseTarget := preview.NextBuyPrice
+	if preview.NextBuyPercent.IsPositive() {
+		baseTarget = calcDownTarget(preview.NextBuyReference, preview.NextBuyPercent)
+	}
+	snapshot.NextBuyPrice = preview.NextBuyPrice.StringFixed(4)
+	snapshot.BaseBuyPrice = baseTarget.StringFixed(4)
+	snapshot.NextBuyRef = preview.NextBuyReference.StringFixed(4)
+	snapshot.NextBuyReason = preview.NextBuyReason
+	snapshot.BuyTrailPercent = stock.TrailPercent.StringFixed(2)
+	if preview.NextBuyPercent.IsPositive() {
+		snapshot.NextBuyPercent = preview.NextBuyPercent.StringFixed(2)
+	}
+	if state.BuyArmed {
+		snapshot.BuyTrailArmed = true
+		if lowest := decimalStringPtr(state.BuyLowest); lowest != nil {
+			trailingTarget := calcUpTarget(*lowest, stock.TrailPercent)
+			snapshot.BuyTrailLowest = lowest.StringFixed(4)
+			snapshot.BuyTrailTrigger = decimalMin(baseTarget, trailingTarget).StringFixed(4)
+		}
+	}
+	if cc.accountErr != nil {
+		if e.cfg.Engine.MaxExposure.IsPositive() {
+			snapshot.BuyCapacityReason = "账户资金读取失败，无法校验最大投入金额，已禁止买入"
+			snapshot.BuyCapacityBottlenecks = []string{"最大投入金额"}
+			snapshot.BuyCapacityLimitTags = []CapacityTag{{Label: "最大投入金额", Kind: "funds"}}
+		} else {
+			snapshot.BuyCapacityReason = "账户资金读取失败，无法计算还能买几笔"
+		}
+		return
+	}
+	capacity := estimateBuyCapacity(stock, position, preview.NextBuyPrice, cc.funds, e.cfg.Engine.MaxExposure)
+	snapshot.RemainingBuyLots = capacity.RemainingLots
+	snapshot.NextBuyCashNeeded = capacity.CashNeeded.StringFixed(4)
+	snapshot.NextBuyMarginUse = capacity.MarginUse.StringFixed(4)
+	snapshot.BuyCapacityReason = capacity.Reason
+	snapshot.BuyCapacityDetails = capacity.Details
+	snapshot.BuyCapacityBottlenecks = capacity.Bottlenecks
+	snapshot.BuyCapacityDetailTags = capacity.DetailTags
+	snapshot.BuyCapacityLimitTags = capacity.LimitTags
+}
+
+func fillSellPreview(snapshot *SymbolSnapshot, stock StockConfig, state SymbolState, preview StrategyPreview) {
+	baseTarget := calcUpTarget(preview.NextSellReference, stock.SellPercent)
+	snapshot.NextSellPrice = preview.NextSellPrice.StringFixed(4)
+	snapshot.BaseSellPrice = baseTarget.StringFixed(4)
+	snapshot.NextSellRef = preview.NextSellReference.StringFixed(4)
+	snapshot.NextSellProfit = preview.NextSellProfit.StringFixed(4)
+	snapshot.NextSellReason = preview.NextSellReason
+	snapshot.SellTrailPercent = stock.TrailPercent.StringFixed(2)
+	if state.SellArmed {
+		snapshot.SellTrailArmed = true
+		if highest := decimalStringPtr(state.SellHighest); highest != nil {
+			trailingTarget := calcDownTarget(*highest, stock.TrailPercent)
+			snapshot.SellTrailHighest = highest.StringFixed(4)
+			snapshot.SellTrailTrigger = decimalMax(baseTarget, trailingTarget).StringFixed(4)
+		}
+	}
 }
 
 func (e *Engine) refreshAccessTokenIfNeeded(ctx context.Context) error {
@@ -829,6 +838,9 @@ func (e *Engine) reloadConfigIfChanged(ctx context.Context) {
 	e.status.ConfigReloadedAt = &reloadedAt
 	e.statusMu.Unlock()
 	e.logger.Printf("检测到配置文件变化，已热加载: %s", nextCfg.FilePath)
+	for _, warning := range nextCfg.Warnings {
+		e.logger.Printf("配置警告: %s", warning)
+	}
 
 	if tradeLimiterNeedsReload(oldCfg.Engine, nextCfg.Engine) {
 		e.client.tradeLimiter = NewTradeLimiter(nextCfg.Engine.TradeAPIWindow, nextCfg.Engine.TradeAPIMaxCalls, nextCfg.Engine.TradeAPIMinGap)

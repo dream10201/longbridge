@@ -32,6 +32,9 @@ func main() {
 	}
 
 	logger := log.New(os.Stdout, "[longbridge] ", log.LstdFlags|log.Lmicroseconds)
+	for _, warning := range cfg.Warnings {
+		logger.Printf("配置警告: %s", warning)
+	}
 
 	engine, err := app.NewEngine(cfg, logger)
 	if err != nil {
