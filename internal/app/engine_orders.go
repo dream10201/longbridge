@@ -13,7 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func (e *Engine) placeOrder(ctx context.Context, stock StockConfig, currentPrice decimal.Decimal, decision Decision, funds availableFunds, accountErr error) error {
+func (e *Engine) placeOrder(ctx context.Context, stock StockConfig, phase MarketPhase, currentPrice decimal.Decimal, decision Decision, funds availableFunds, accountErr error) error {
 	price := resolveOrderPrice(decision, currentPrice)
 	if !price.IsPositive() {
 		return fmt.Errorf("订单价格无效")
@@ -41,7 +41,7 @@ func (e *Engine) placeOrder(ctx context.Context, stock StockConfig, currentPrice
 		SubmittedPrice:    price,
 		SubmittedQuantity: uint64(stock.OrderQuantity),
 		TimeInForce:       lbtrade.TimeTypeDay,
-		OutsideRTH:        lbtrade.OutsideRTHAny,
+		OutsideRTH:        outsideRTHForPhase(phase),
 		Remark:            stock.Remark,
 	}
 	if decision.Action == ActionBuy {
@@ -72,6 +72,14 @@ func (e *Engine) placeOrder(ctx context.Context, stock StockConfig, currentPrice
 	})
 	e.flushState()
 	return nil
+}
+
+// outsideRTHForPhase 夜盘订单必须显式传 OVERNIGHT,ANY_TIME 只覆盖盘前/盘中/盘后。
+func outsideRTHForPhase(phase MarketPhase) lbtrade.OutsideRTH {
+	if phase == MarketPhaseOvernight {
+		return lbtrade.OutsideRTHOvernight
+	}
+	return lbtrade.OutsideRTHAny
 }
 
 // flushState 在挂单/成交等关键状态变化后立即落盘,避免硬崩溃丢失网格锚点。

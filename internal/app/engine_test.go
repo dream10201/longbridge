@@ -838,3 +838,85 @@ func TestQuoteChangeUsesSameLatestPriceSource(t *testing.T) {
 		t.Fatalf("expected up trend, got %q", trend)
 	}
 }
+
+func TestProcessSymbolKeepsLadderForDisabledStock(t *testing.T) {
+	store, err := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Update("NVDA.US", func(s *SymbolState) {
+		s.BuyLadder = []string{"190", "182"}
+		s.LastBuyPrice = "182"
+		s.LastAction = ActionBuy
+	})
+	stock := StockConfig{
+		Symbol:        "NVDA.US",
+		InitialPrice:  mustDecimal(t, "195"),
+		SellPercent:   mustDecimal(t, "7"),
+		TrailPercent:  mustDecimal(t, "1"),
+		BuyPercent:    mustDecimal(t, "4"),
+		MaxLots:       4,
+		OrderQuantity: 5,
+		Remark:        "snap-nvda",
+		Enabled:       false,
+	}
+	engine := &Engine{cfg: &Config{Stocks: []StockConfig{stock}}, state: store}
+	cc := &cycleContext{ctx: context.Background(), positions: map[string]PositionSnapshot{}}
+
+	snapshot := engine.processSymbol(cc, stock)
+	if snapshot.Decision != "当前股票已禁用" {
+		t.Fatalf("unexpected decision %q", snapshot.Decision)
+	}
+	got := store.Get("NVDA.US")
+	if len(got.BuyLadder) != 2 || got.LastBuyPrice != "182" {
+		t.Fatalf("expected ladder preserved for disabled stock, got %+v", got)
+	}
+}
+
+func TestNormalizeStateWithPositionDelaysLadderRebuild(t *testing.T) {
+	store, err := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Update("AAPL.US", func(s *SymbolState) {
+		s.BuyLadder = []string{"100", "98"}
+		s.LastBuyPrice = "98"
+		s.SellAnchors = []string{"105"}
+	})
+	engine := &Engine{state: store}
+	stock := StockConfig{Symbol: "AAPL.US", OrderQuantity: 10}
+	lagging := PositionSnapshot{Quantity: 30, Available: 30, CostPrice: mustDecimal(t, "99"), HasCost: true}
+
+	first := engine.normalizeStateWithPosition(stock, lagging, store.Get("AAPL.US"))
+	if len(first.BuyLadder) != 2 || first.LadderMismatchCycles != 1 || len(first.SellAnchors) != 1 {
+		t.Fatalf("expected first mismatch to only mark state, got %+v", first)
+	}
+
+	recovered := engine.normalizeStateWithPosition(stock, PositionSnapshot{Quantity: 20, Available: 20}, store.Get("AAPL.US"))
+	if recovered.LadderMismatchCycles != 0 || len(recovered.BuyLadder) != 2 {
+		t.Fatalf("expected mismatch counter reset when position catches up, got %+v", recovered)
+	}
+
+	engine.normalizeStateWithPosition(stock, lagging, store.Get("AAPL.US"))
+	rebuilt := engine.normalizeStateWithPosition(stock, lagging, store.Get("AAPL.US"))
+	if len(rebuilt.BuyLadder) != 3 || rebuilt.LastBuyPrice != "99" || len(rebuilt.SellAnchors) != 0 || rebuilt.LadderMismatchCycles != 0 {
+		t.Fatalf("expected ladder rebuilt on second consecutive mismatch, got %+v", rebuilt)
+	}
+
+	engine.normalizeStateWithPosition(stock, PositionSnapshot{}, store.Get("AAPL.US"))
+	cleared := engine.normalizeStateWithPosition(stock, PositionSnapshot{}, store.Get("AAPL.US"))
+	if len(cleared.BuyLadder) != 0 || cleared.LastBuyPrice != "" {
+		t.Fatalf("expected ladder cleared on second consecutive empty position, got %+v", cleared)
+	}
+}
+
+func TestOutsideRTHForPhase(t *testing.T) {
+	if got := outsideRTHForPhase(MarketPhaseOvernight); got != lbtrade.OutsideRTHOvernight {
+		t.Fatalf("expected OVERNIGHT for overnight phase, got %q", got)
+	}
+	for _, phase := range []MarketPhase{MarketPhasePre, MarketPhaseNormal, MarketPhasePost, MarketPhaseClosed} {
+		if got := outsideRTHForPhase(phase); got != lbtrade.OutsideRTHAny {
+			t.Fatalf("expected ANY_TIME for %s, got %q", phase, got)
+		}
+	}
+}

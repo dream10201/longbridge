@@ -11,20 +11,22 @@ import (
 func (e *Engine) normalizeStateWithPosition(stock StockConfig, position PositionSnapshot, state SymbolState) SymbolState {
 	currentLots := lotsFromQuantity(position.Quantity, stock.OrderQuantity)
 	changed := false
+	mismatch := int64(len(state.BuyLadder)) != currentLots
 
-	if currentLots == 0 {
-		if len(state.BuyLadder) > 0 {
-			state.BuyLadder = nil
-			state.LastBuyPrice = ""
-			changed = true
-			if clearTrailingBuyState(&state) {
-				changed = true
-			}
-		}
-		if clearTrailingSellState(&state) {
-			changed = true
-		}
-	} else if int64(len(state.BuyLadder)) != currentLots {
+	// 券商持仓数量可能比成交回报晚一拍,首次发现不一致先观察一轮,连续两轮才重建。
+	switch {
+	case mismatch && state.LadderMismatchCycles == 0:
+		state.LadderMismatchCycles = 1
+		state.LastDecision = fmt.Sprintf("持仓 %d 笔与本地阶梯 %d 笔不一致，等待下一轮确认", currentLots, len(state.BuyLadder))
+		changed = true
+	case mismatch && currentLots == 0:
+		state.BuyLadder = nil
+		state.LastBuyPrice = ""
+		state.LadderMismatchCycles = 0
+		clearTrailingBuyState(&state)
+		changed = true
+	case mismatch:
+		state.LadderMismatchCycles = 0
 		rebuildPrice := ""
 		if position.HasCost {
 			rebuildPrice = position.CostPrice.String()
@@ -45,13 +47,16 @@ func (e *Engine) normalizeStateWithPosition(stock StockConfig, position Position
 			state.SellAnchors = nil
 			state.LastSellPrice = ""
 		}
-		if clearTrailingBuyState(&state) {
-			changed = true
-		}
-		if clearTrailingSellState(&state) {
-			changed = true
-		}
+		clearTrailingBuyState(&state)
+		clearTrailingSellState(&state)
 		state.LastDecision = fmt.Sprintf("检测到持仓与本地网格状态不一致，已按当前持仓 %d 笔重建买入阶梯", currentLots)
+		changed = true
+	case state.LadderMismatchCycles != 0:
+		state.LadderMismatchCycles = 0
+		changed = true
+	}
+
+	if currentLots == 0 && clearTrailingSellState(&state) {
 		changed = true
 	}
 
@@ -108,7 +113,6 @@ func (e *Engine) reconcileStrategyConfig(ctx context.Context, stock StockConfig,
 	if state.Pending != nil {
 		if err := e.client.CancelOrder(ctx, state.Pending.OrderID); err != nil {
 			e.state.Update(stock.Symbol, func(s *SymbolState) {
-				s.ConfigSignature = signature
 				s.LastError = fmt.Sprintf("策略配置变化后撤销旧挂单失败: %v", err)
 				s.LastDecision = "检测到策略配置变化，但旧挂单撤销失败，暂停本轮下单"
 			})

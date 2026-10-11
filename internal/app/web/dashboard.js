@@ -717,7 +717,7 @@
 
     async function pollStatus() {
       try {
-        const resp = await fetch(buildStatusURL(), { cache: "no-store" });
+        const resp = await fetch(buildStatusURL(), { cache: "no-cache" });
         if (!resp.ok) {
           pollFailureCount += 1;
           renderPollState(latestStatus);

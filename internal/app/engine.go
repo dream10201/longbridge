@@ -442,6 +442,10 @@ func (e *Engine) cycle(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("获取持仓失败: %w", err)
 	}
+	positions, err := aggregatePositions(positionChannels)
+	if err != nil {
+		return fmt.Errorf("解析持仓失败: %w", err)
+	}
 	accountBalances, accountErr := e.client.AccountBalance(reqCtx, &lbtrade.GetAccountBalance{Currency: lbtrade.CurrencyUSD})
 	brokerPending, brokerPendingErr := e.loadBrokerPendingOrders(reqCtx)
 	if brokerPendingErr != nil {
@@ -453,7 +457,7 @@ func (e *Engine) cycle(ctx context.Context) error {
 		symbols:       symbols,
 		marketClock:   marketClock,
 		quotes:        quoteBySymbol,
-		positions:     aggregatePositions(positionChannels),
+		positions:     positions,
 		brokerPending: brokerPending,
 		funds:         extractUSDFunds(accountBalances),
 		accountErr:    accountErr,
@@ -521,7 +525,13 @@ func (e *Engine) syncSymbolPending(cc *cycleContext, stock StockConfig) SymbolSt
 		})
 	} else if terminal {
 		if channels, err := e.client.StockPositions(cc.ctx, cc.symbols); err == nil {
-			cc.positions = aggregatePositions(channels)
+			if positions, err := aggregatePositions(channels); err == nil {
+				cc.positions = positions
+			} else {
+				e.logger.Printf("%s 挂单终态后解析持仓失败: %v", stock.Symbol, err)
+			}
+		} else {
+			e.logger.Printf("%s 挂单终态后刷新持仓失败: %v", stock.Symbol, err)
 		}
 	}
 	return e.state.Get(stock.Symbol)
@@ -533,13 +543,17 @@ func (e *Engine) processSymbol(cc *cycleContext, stock StockConfig) SymbolSnapsh
 	quoteItem := cc.quotes[stock.Symbol]
 	price, hasPrice := currentPriceFromQuote(quoteItem, cc.marketClock.CurrentPhase)
 	position := cc.positions[stock.Symbol]
-	state = e.normalizeStateWithPosition(stock, position, state)
 	var costPtr *decimal.Decimal
 	if position.HasCost {
 		costCopy := position.CostPrice
 		costPtr = &costCopy
 	}
-	state, configChanged := e.reconcileStrategyConfig(cc.ctx, stock, position, costPtr, state)
+	configChanged := false
+	// 禁用股票不会拉取持仓,跳过对账以免把已有网格阶梯当成空仓清掉。
+	if stock.Enabled {
+		state = e.normalizeStateWithPosition(stock, position, state)
+		state, configChanged = e.reconcileStrategyConfig(cc.ctx, stock, position, costPtr, state)
+	}
 
 	snapshot := SymbolSnapshot{
 		Symbol:          stock.Symbol,
@@ -643,7 +657,7 @@ func (e *Engine) processSymbol(cc *cycleContext, stock StockConfig) SymbolSnapsh
 		return snapshot
 	}
 
-	if err := e.placeOrder(cc.ctx, stock, price, decision, cc.funds, cc.accountErr); err != nil {
+	if err := e.placeOrder(cc.ctx, stock, cc.marketClock.CurrentPhase, price, decision, cc.funds, cc.accountErr); err != nil {
 		e.logger.Printf("%s 下单失败: %v", stock.Symbol, err)
 		e.state.Update(stock.Symbol, func(s *SymbolState) {
 			s.LastError = err.Error()

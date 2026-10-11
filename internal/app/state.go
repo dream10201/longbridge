@@ -25,23 +25,25 @@ type PersistentState struct {
 }
 
 type SymbolState struct {
-	LastAction      ActionType         `json:"last_action"`
-	LastBuyPrice    string             `json:"last_buy_price,omitempty"`
-	LastSellPrice   string             `json:"last_sell_price,omitempty"`
-	BuyLadder       []string           `json:"buy_ladder,omitempty"`
-	SellAnchors     []string           `json:"sell_anchors,omitempty"`
-	ConfigSignature string             `json:"config_signature,omitempty"`
-	BuyArmed        bool               `json:"buy_armed,omitempty"`
-	BuyLowest       string             `json:"buy_lowest,omitempty"`
-	SellArmed       bool               `json:"sell_armed,omitempty"`
-	SellHighest     string             `json:"sell_highest,omitempty"`
-	LastActionAt    *time.Time         `json:"last_action_at,omitempty"`
-	LastFilledAt    *time.Time         `json:"last_filled_at,omitempty"`
-	LastDecision    string             `json:"last_decision,omitempty"`
-	LastError       string             `json:"last_error,omitempty"`
-	LastOrderStatus string             `json:"last_order_status,omitempty"`
-	LastOrderMsg    string             `json:"last_order_msg,omitempty"`
-	Pending         *PendingOrderState `json:"pending,omitempty"`
+	LastAction      ActionType `json:"last_action"`
+	LastBuyPrice    string     `json:"last_buy_price,omitempty"`
+	LastSellPrice   string     `json:"last_sell_price,omitempty"`
+	BuyLadder       []string   `json:"buy_ladder,omitempty"`
+	SellAnchors     []string   `json:"sell_anchors,omitempty"`
+	ConfigSignature string     `json:"config_signature,omitempty"`
+	BuyArmed        bool       `json:"buy_armed,omitempty"`
+	BuyLowest       string     `json:"buy_lowest,omitempty"`
+	SellArmed       bool       `json:"sell_armed,omitempty"`
+	SellHighest     string     `json:"sell_highest,omitempty"`
+	// LadderMismatchCycles 记录持仓与买入阶梯连续不一致的轮数,用于延迟重建。
+	LadderMismatchCycles int                `json:"ladder_mismatch_cycles,omitempty"`
+	LastActionAt         *time.Time         `json:"last_action_at,omitempty"`
+	LastFilledAt         *time.Time         `json:"last_filled_at,omitempty"`
+	LastDecision         string             `json:"last_decision,omitempty"`
+	LastError            string             `json:"last_error,omitempty"`
+	LastOrderStatus      string             `json:"last_order_status,omitempty"`
+	LastOrderMsg         string             `json:"last_order_msg,omitempty"`
+	Pending              *PendingOrderState `json:"pending,omitempty"`
 }
 
 type PendingOrderState struct {

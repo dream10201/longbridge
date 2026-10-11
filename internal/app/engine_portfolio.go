@@ -21,7 +21,7 @@ func (e *Engine) enabledSymbols() []string {
 	return symbols
 }
 
-func aggregatePositions(channels []*lbtrade.StockPositionChannel) map[string]PositionSnapshot {
+func aggregatePositions(channels []*lbtrade.StockPositionChannel) (map[string]PositionSnapshot, error) {
 	result := make(map[string]PositionSnapshot)
 	for _, channel := range channels {
 		if channel == nil {
@@ -31,8 +31,14 @@ func aggregatePositions(channels []*lbtrade.StockPositionChannel) map[string]Pos
 			if position == nil {
 				continue
 			}
-			qty, _ := strconv.ParseInt(position.Quantity, 10, 64)
-			available, _ := strconv.ParseInt(position.AvailableQuantity, 10, 64)
+			qty, err := strconv.ParseInt(position.Quantity, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("%s 持仓数量无效 %q: %w", position.Symbol, position.Quantity, err)
+			}
+			available, err := strconv.ParseInt(position.AvailableQuantity, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("%s 可用数量无效 %q: %w", position.Symbol, position.AvailableQuantity, err)
+			}
 			current := result[position.Symbol]
 			current.Quantity += qty
 			current.Available += available
@@ -49,7 +55,7 @@ func aggregatePositions(channels []*lbtrade.StockPositionChannel) map[string]Pos
 			result[position.Symbol] = current
 		}
 	}
-	return result
+	return result, nil
 }
 
 func buildAccountSnapshots(accounts []*lbtrade.AccountBalance) []AccountBalanceSnapshot {

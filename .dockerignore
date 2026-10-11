@@ -1,0 +1,9 @@
+.git
+.github
+.claude
+.env
+.env.*
+state.json
+state.json.tmp
+data/
+longbridge

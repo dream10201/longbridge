@@ -51,32 +51,36 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	errCh := make(chan error, 2)
-
+	runDone := make(chan struct{})
 	go func() {
-		errCh <- engine.Run(ctx)
+		defer close(runDone)
+		if err := engine.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Printf("运行异常: %v", err)
+		}
 	}()
 
+	serverErr := make(chan error, 1)
 	go func() {
 		logger.Printf("Web 监控页面监听 %s", cfg.Server.Address())
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
+			serverErr <- err
 		}
 	}()
 
 	select {
 	case <-ctx.Done():
-	case err := <-errCh:
-		if err != nil {
-			logger.Printf("运行异常: %v", err)
-		}
+	case <-runDone:
+	case err := <-serverErr:
+		logger.Printf("运行异常: %v", err)
 	}
+	stop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Printf("关闭 HTTP 服务失败: %v", err)
 	}
+	<-runDone
 }
 
 // runHealthcheck 以退出码形式报告服务状态,替代镜像内的 curl。
