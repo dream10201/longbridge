@@ -19,7 +19,7 @@ require (
 	github.com/longbridge/openapi-protobufs/gen/go v0.7.0 // indirect
 	github.com/longbridge/openapi-protocol/go v0.5.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	golang.org/x/oauth2 v0.36.0 // indirect
+	golang.org/x/oauth2 v0.37.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
