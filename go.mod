@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/longbridge/openapi-go v0.27.0
+	github.com/longbridge/openapi-go v0.29.0
 	github.com/shopspring/decimal v1.4.0
 )
 
