@@ -440,71 +440,30 @@ func (c *client) closeByServer(packet *protocol.Packet) {
 	c.reconnecting()
 }
 
+// 心跳由服务端发起:服务端定期发送 ws ping,客户端只回 pong。
+// 客户端主动发送 ws ping 帧会被服务端直接断开连接(close 1006,无 close 帧),
+// 因此这里只检查最近一次收到服务端数据的时间,不再主动发送心跳。
 func (c *client) keepalive() {
 	t := time.NewTicker(c.dialOptions.Keepalive)
+	defer t.Stop()
 
-	now := time.Now()
-	c.lastPongAt = now
-
-	check := func() error {
-		if c.lastKeepaliveId == 0 {
-			return nil
-		}
-
-		if d := time.Since(c.lastPongAt); d > c.dialOptions.KeepaliveTimeout {
-			return errors.Errorf("keepalive timeout %s", d.String())
-		}
-
-		return nil
-	}
-
-	ping := func() error {
-		// skip ping op when do reconnecting
-		c.RLock()
-		defer c.RUnlock()
-		if c.doReconnectting {
-			return nil
-		}
-
-		if c.conn == nil || c.conn.Context() == nil {
-			return nil
-		}
-
-		id := c.conn.Context().NextReqId()
-
-		hid := new(int32)
-		*hid = int32(id)
-
-		p, err := protocol.NewPacket(c.conn.Context(), protocol.RequestPacket, uint32(control.Command_CMD_HEARTBEAT), &control.Heartbeat{Timestamp: time.Now().UnixNano() / int64(time.Millisecond), HeartbeatId: hid}, protocol.WithRequestId(id))
-
-		if err != nil {
-			return err
-		}
-
-		if err = c.write(&p); err != nil {
-			return err
-		}
-
-		c.lastKeepaliveId = id
-
-		return nil
-	}
+	c.lastPongAt = time.Now()
 
 	for {
 		select {
 		case <-c.closeCh:
 			return
 		case <-t.C:
-			if err := check(); err != nil {
-				c.Logger.Errorf("keepalive error: %v", err)
-				c.reconnecting()
+			c.RLock()
+			reconnecting := c.doReconnectting
+			c.RUnlock()
+			if reconnecting {
 				continue
 			}
 
-			if err := ping(); err != nil {
-				c.Logger.Errorf("keepalive failed to ping, err: %v", err)
+			if d := time.Since(c.lastPongAt); d > c.dialOptions.KeepaliveTimeout {
+				c.Logger.Errorf("keepalive error: no data from server for %s", d.String())
 				c.reconnecting()
-				continue
 			}
 		}
 	}
@@ -518,6 +477,8 @@ func (c *client) onPacket(packet *protocol.Packet, err error) {
 	}
 
 	c.Logger.Debugf("got packet, type: %s, cmd: %d, req_id: %d, status_code: %d", packet.Metadata.Type, packet.CMD(), packet.Metadata.RequestId, packet.Metadata.StatusCode)
+
+	c.lastPongAt = time.Now()
 
 	if packet.IsControl() {
 		c.handleControl(packet)

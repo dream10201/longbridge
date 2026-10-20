@@ -44,7 +44,8 @@ type mockConn struct {
 	onPush      func(*protocol.Packet)
 	writeError  error
 
-	closed bool
+	pingSent bool
+	closed   bool
 }
 
 func (c *mockConn) NeedHandleControl() bool {
@@ -73,6 +74,7 @@ func (c *mockConn) Write(p *protocol.Packet, opts ...protocol.PackOption) error 
 	}
 
 	if p.IsPing() {
+		c.pingSent = true
 		rp := protocol.MustNewResponse(c.ctx, uint32(control.Command_CMD_HEARTBEAT), protocol.StatusSuccess, p.Body, protocol.WithRequestId(p.Metadata.RequestId))
 
 		go func() {
@@ -263,17 +265,38 @@ func TestClientOnPingPong(t *testing.T) {
 	})
 
 	cli.OnPong(func(p *protocol.Packet) {
-		var data control.Heartbeat
-
-		err := p.Unmarshal(&data)
-		assert.Nil(t, err)
-
 		waitCh <- struct{}{}
 	})
 
 	ping := protocol.MustNewRequest(mc.ctx, uint32(control.Command_CMD_HEARTBEAT), nil)
 	mc.packetCh <- &ping
+	<-waitCh
 
+	pong := protocol.MustNewResponse(mc.ctx, uint32(control.Command_CMD_HEARTBEAT), protocol.StatusSuccess, nil)
+	mc.packetCh <- &pong
 	<-waitCh
-	<-waitCh
+}
+
+func TestClientKeepaliveNeverSendsPing(t *testing.T) {
+	c, _ := newClientAndDial(Keepalive(time.Millisecond*50), KeepaliveTimeout(time.Second*5))
+	cli := c.(*client)
+	mc := cli.conn.(*mockConn)
+
+	time.Sleep(time.Millisecond * 300)
+
+	assert.False(t, mc.pingSent)
+	assert.Equal(t, mc, cli.conn)
+}
+
+func TestClientKeepaliveTimeoutReconnects(t *testing.T) {
+	c, _ := newClientAndDial(Keepalive(time.Millisecond*50), KeepaliveTimeout(time.Millisecond*200))
+	cli := c.(*client)
+	mc := cli.conn.(*mockConn)
+
+	time.Sleep(time.Millisecond * 600)
+
+	cli.RLock()
+	defer cli.RUnlock()
+	assert.True(t, mc.closed)
+	assert.NotEqual(t, mc, cli.conn)
 }

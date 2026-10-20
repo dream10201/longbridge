@@ -1,0 +1,184 @@
+diff --git a/third_party/openapi-protocol/client/client.go b/third_party/openapi-protocol/client/client.go
+index f2e6a34..ebd6df3 100644
+--- a/third_party/openapi-protocol/client/client.go
++++ b/third_party/openapi-protocol/client/client.go
+@@ -440,71 +440,30 @@ func (c *client) closeByServer(packet *protocol.Packet) {
+ 	c.reconnecting()
+ }
+ 
++// 心跳由服务端发起:服务端定期发送 ws ping,客户端只回 pong。
++// 客户端主动发送 ws ping 帧会被服务端直接断开连接(close 1006,无 close 帧),
++// 因此这里只检查最近一次收到服务端数据的时间,不再主动发送心跳。
+ func (c *client) keepalive() {
+ 	t := time.NewTicker(c.dialOptions.Keepalive)
++	defer t.Stop()
+ 
+-	now := time.Now()
+-	c.lastPongAt = now
+-
+-	check := func() error {
+-		if c.lastKeepaliveId == 0 {
+-			return nil
+-		}
+-
+-		if d := time.Since(c.lastPongAt); d > c.dialOptions.KeepaliveTimeout {
+-			return errors.Errorf("keepalive timeout %s", d.String())
+-		}
+-
+-		return nil
+-	}
+-
+-	ping := func() error {
+-		// skip ping op when do reconnecting
+-		c.RLock()
+-		defer c.RUnlock()
+-		if c.doReconnectting {
+-			return nil
+-		}
+-
+-		if c.conn == nil || c.conn.Context() == nil {
+-			return nil
+-		}
+-
+-		id := c.conn.Context().NextReqId()
+-
+-		hid := new(int32)
+-		*hid = int32(id)
+-
+-		p, err := protocol.NewPacket(c.conn.Context(), protocol.RequestPacket, uint32(control.Command_CMD_HEARTBEAT), &control.Heartbeat{Timestamp: time.Now().UnixNano() / int64(time.Millisecond), HeartbeatId: hid}, protocol.WithRequestId(id))
+-
+-		if err != nil {
+-			return err
+-		}
+-
+-		if err = c.write(&p); err != nil {
+-			return err
+-		}
+-
+-		c.lastKeepaliveId = id
+-
+-		return nil
+-	}
++	c.lastPongAt = time.Now()
+ 
+ 	for {
+ 		select {
+ 		case <-c.closeCh:
+ 			return
+ 		case <-t.C:
+-			if err := check(); err != nil {
+-				c.Logger.Errorf("keepalive error: %v", err)
+-				c.reconnecting()
++			c.RLock()
++			reconnecting := c.doReconnectting
++			c.RUnlock()
++			if reconnecting {
+ 				continue
+ 			}
+ 
+-			if err := ping(); err != nil {
+-				c.Logger.Errorf("keepalive failed to ping, err: %v", err)
++			if d := time.Since(c.lastPongAt); d > c.dialOptions.KeepaliveTimeout {
++				c.Logger.Errorf("keepalive error: no data from server for %s", d.String())
+ 				c.reconnecting()
+-				continue
+ 			}
+ 		}
+ 	}
+@@ -519,6 +478,8 @@ func (c *client) onPacket(packet *protocol.Packet, err error) {
+ 
+ 	c.Logger.Debugf("got packet, type: %s, cmd: %d, req_id: %d, status_code: %d", packet.Metadata.Type, packet.CMD(), packet.Metadata.RequestId, packet.Metadata.StatusCode)
+ 
++	c.lastPongAt = time.Now()
++
+ 	if packet.IsControl() {
+ 		c.handleControl(packet)
+ 		return
+diff --git a/third_party/openapi-protocol/client/client_test.go b/third_party/openapi-protocol/client/client_test.go
+index 302f9df..0ee7eb8 100644
+--- a/third_party/openapi-protocol/client/client_test.go
++++ b/third_party/openapi-protocol/client/client_test.go
+@@ -44,7 +44,8 @@ type mockConn struct {
+ 	onPush      func(*protocol.Packet)
+ 	writeError  error
+ 
+-	closed bool
++	pingSent bool
++	closed   bool
+ }
+ 
+ func (c *mockConn) NeedHandleControl() bool {
+@@ -73,6 +74,7 @@ func (c *mockConn) Write(p *protocol.Packet, opts ...protocol.PackOption) error
+ 	}
+ 
+ 	if p.IsPing() {
++		c.pingSent = true
+ 		rp := protocol.MustNewResponse(c.ctx, uint32(control.Command_CMD_HEARTBEAT), protocol.StatusSuccess, p.Body, protocol.WithRequestId(p.Metadata.RequestId))
+ 
+ 		go func() {
+@@ -263,17 +265,38 @@ func TestClientOnPingPong(t *testing.T) {
+ 	})
+ 
+ 	cli.OnPong(func(p *protocol.Packet) {
+-		var data control.Heartbeat
+-
+-		err := p.Unmarshal(&data)
+-		assert.Nil(t, err)
+-
+ 		waitCh <- struct{}{}
+ 	})
+ 
+ 	ping := protocol.MustNewRequest(mc.ctx, uint32(control.Command_CMD_HEARTBEAT), nil)
+ 	mc.packetCh <- &ping
+-
+ 	<-waitCh
++
++	pong := protocol.MustNewResponse(mc.ctx, uint32(control.Command_CMD_HEARTBEAT), protocol.StatusSuccess, nil)
++	mc.packetCh <- &pong
+ 	<-waitCh
+ }
++
++func TestClientKeepaliveNeverSendsPing(t *testing.T) {
++	c, _ := newClientAndDial(Keepalive(time.Millisecond*50), KeepaliveTimeout(time.Second*5))
++	cli := c.(*client)
++	mc := cli.conn.(*mockConn)
++
++	time.Sleep(time.Millisecond * 300)
++
++	assert.False(t, mc.pingSent)
++	assert.Equal(t, mc, cli.conn)
++}
++
++func TestClientKeepaliveTimeoutReconnects(t *testing.T) {
++	c, _ := newClientAndDial(Keepalive(time.Millisecond*50), KeepaliveTimeout(time.Millisecond*200))
++	cli := c.(*client)
++	mc := cli.conn.(*mockConn)
++
++	time.Sleep(time.Millisecond * 600)
++
++	cli.RLock()
++	defer cli.RUnlock()
++	assert.True(t, mc.closed)
++	assert.NotEqual(t, mc, cli.conn)
++}
+diff --git a/third_party/openapi-protocol/client/options.go b/third_party/openapi-protocol/client/options.go
+index bc1ff87..17dd7d7 100644
+--- a/third_party/openapi-protocol/client/options.go
++++ b/third_party/openapi-protocol/client/options.go
+@@ -8,10 +8,12 @@ import (
+ )
+ 
+ var (
+-	defaultDialTimeout      = time.Second * 5
+-	defaultAuthTimeout      = time.Second * 10
+-	defaultKeepalive        = time.Second * 60
+-	defaultKeepaliveTimeout = defaultKeepalive * 2
++	defaultDialTimeout = time.Second * 5
++	defaultAuthTimeout = time.Second * 10
++	// Keepalive 仅为检查间隔;KeepaliveTimeout 与官方 Rust SDK 一致,
++	// 超过该时长未收到服务端任何数据(含 ping)才判定断线。
++	defaultKeepalive        = time.Second * 15
++	defaultKeepaliveTimeout = time.Second * 120
+ 	defaultWriteQueueSize   = 16
+ 	defaultReadBufferSize   = 4096
+ 	defaultReadQueueSize    = 16
