@@ -277,14 +277,14 @@ func TestClientOnPingPong(t *testing.T) {
 	<-waitCh
 }
 
-func TestClientKeepaliveNeverSendsPing(t *testing.T) {
+func TestClientKeepalivePings(t *testing.T) {
 	c, _ := newClientAndDial(Keepalive(time.Millisecond*50), KeepaliveTimeout(time.Second*5))
 	cli := c.(*client)
 	mc := cli.conn.(*mockConn)
 
 	time.Sleep(time.Millisecond * 300)
 
-	assert.False(t, mc.pingSent)
+	assert.True(t, mc.pingSent)
 	assert.Equal(t, mc, cli.conn)
 }
 

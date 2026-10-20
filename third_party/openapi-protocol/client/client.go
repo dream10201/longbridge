@@ -440,14 +440,29 @@ func (c *client) closeByServer(packet *protocol.Packet) {
 	c.reconnecting()
 }
 
-// 心跳由服务端发起:服务端定期发送 ws ping,客户端只回 pong。
-// 客户端主动发送 ws ping 帧会被服务端直接断开连接(close 1006,无 close 帧),
-// 因此这里只检查最近一次收到服务端数据的时间,不再主动发送心跳。
+// 服务端会在 30s 内没有收到任何客户端帧时直接断开连接(close 1006,无 close 帧),
+// 仅回应服务端 ping 不足以维持连接,因此客户端必须以远小于 30s 的间隔主动发送 ping。
 func (c *client) keepalive() {
 	t := time.NewTicker(c.dialOptions.Keepalive)
 	defer t.Stop()
 
 	c.lastPongAt = time.Now()
+
+	ping := func() error {
+		c.RLock()
+		defer c.RUnlock()
+		if c.doReconnectting || c.conn == nil || c.conn.Context() == nil {
+			return nil
+		}
+
+		id := c.conn.Context().NextReqId()
+		hid := int32(id)
+		p, err := protocol.NewPacket(c.conn.Context(), protocol.RequestPacket, uint32(control.Command_CMD_HEARTBEAT), &control.Heartbeat{Timestamp: time.Now().UnixMilli(), HeartbeatId: &hid}, protocol.WithRequestId(id))
+		if err != nil {
+			return err
+		}
+		return c.write(&p)
+	}
 
 	for {
 		select {
@@ -463,6 +478,12 @@ func (c *client) keepalive() {
 
 			if d := time.Since(c.lastPongAt); d > c.dialOptions.KeepaliveTimeout {
 				c.Logger.Errorf("keepalive error: no data from server for %s", d.String())
+				c.reconnecting()
+				continue
+			}
+
+			if err := ping(); err != nil {
+				c.Logger.Errorf("keepalive failed to ping, err: %v", err)
 				c.reconnecting()
 			}
 		}

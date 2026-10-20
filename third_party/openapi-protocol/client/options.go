@@ -10,10 +10,9 @@ import (
 var (
 	defaultDialTimeout = time.Second * 5
 	defaultAuthTimeout = time.Second * 10
-	// Keepalive 仅为检查间隔;KeepaliveTimeout 与官方 Rust SDK 一致,
-	// 超过该时长未收到服务端任何数据(含 ping)才判定断线。
-	defaultKeepalive        = time.Second * 15
-	defaultKeepaliveTimeout = time.Second * 120
+	// 服务端 30s 无客户端帧即断线,ping 间隔必须远小于 30s。
+	defaultKeepalive        = time.Second * 10
+	defaultKeepaliveTimeout = defaultKeepalive * 3
 	defaultWriteQueueSize   = 16
 	defaultReadBufferSize   = 4096
 	defaultReadQueueSize    = 16
