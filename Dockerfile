@@ -1,6 +1,6 @@
 # ---- Go 构建 ----
-# 基础镜像走 ECR Public 的 Docker Hub 官方镜像副本,避开 auth.docker.io 故障/限流
-FROM public.ecr.aws/docker/library/golang:1.26-bookworm AS build
+# 基础镜像走 mirror.gcr.io 的 Docker Hub 镜像副本,避开 auth.docker.io 限流和 ECR Public 匿名配额
+FROM mirror.gcr.io/library/golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 # go.mod 里 replace 指向本地 third_party,下载依赖前需一并拷入
