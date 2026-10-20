@@ -168,7 +168,7 @@ func (c *client) onConnClose(err error) {
 	default:
 	}
 
-	c.Logger.Debugf("reconnect for conn closed: %v", err)
+	c.Logger.Infof("conn closed: %v, last data from server %s ago", err, time.Since(c.lastPongAt).Truncate(time.Millisecond))
 
 	c.reconnecting()
 }

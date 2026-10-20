@@ -28,15 +28,17 @@ func NewLongPortClientWithLimiterAndLogger(cfg *Config, limiter *TradeLimiter, l
 	}
 	sdkCfg.Client = newProxyAwareHTTPClient(sdkCfg.HTTPTimeout)
 	sessionErr := make(chan struct{}, 1)
+	tradeCfg := *sdkCfg
 	if logger != nil {
-		sdkCfg.SetLogger(newLongPortSDKLogger(logger, sessionErr))
+		sdkCfg.SetLogger(newLongPortSDKLogger("quote", logger, sessionErr))
+		tradeCfg.SetLogger(newLongPortSDKLogger("trade", logger, sessionErr))
 	}
 
 	qctx, err := lbquote.NewFromCfg(sdkCfg)
 	if err != nil {
 		return nil, fmt.Errorf("初始化行情上下文失败: %w", err)
 	}
-	tctx, err := lbtrade.NewFromCfg(sdkCfg)
+	tctx, err := lbtrade.NewFromCfg(&tradeCfg)
 	if err != nil {
 		_ = qctx.Close()
 		return nil, fmt.Errorf("初始化交易上下文失败: %w", err)
@@ -220,6 +222,7 @@ func (l *TradeLimiter) reserve() (time.Duration, bool) {
 }
 
 type longPortSDKLogger struct {
+	name       string
 	logger     *log.Logger
 	sessionErr chan<- struct{}
 	level      string
@@ -227,8 +230,9 @@ type longPortSDKLogger struct {
 	last       map[string]time.Time
 }
 
-func newLongPortSDKLogger(logger *log.Logger, sessionErr chan<- struct{}) *longPortSDKLogger {
+func newLongPortSDKLogger(name string, logger *log.Logger, sessionErr chan<- struct{}) *longPortSDKLogger {
 	return &longPortSDKLogger{
+		name:       name,
 		logger:     logger,
 		sessionErr: sessionErr,
 		last:       make(map[string]time.Time),
@@ -304,7 +308,7 @@ func (l *longPortSDKLogger) log(level string, msg string) {
 		return
 	}
 	if l.logger != nil {
-		l.logger.Printf("LongPort SDK [%s] %s", level, msg)
+		l.logger.Printf("LongPort SDK %s [%s] %s", l.name, level, msg)
 	}
 }
 

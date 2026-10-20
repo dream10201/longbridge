@@ -1,7 +1,16 @@
 diff --git a/third_party/openapi-protocol/client/client.go b/third_party/openapi-protocol/client/client.go
-index f2e6a34..ebd6df3 100644
+index f2e6a34..e82715f 100644
 --- a/third_party/openapi-protocol/client/client.go
 +++ b/third_party/openapi-protocol/client/client.go
+@@ -168,7 +168,7 @@ func (c *client) onConnClose(err error) {
+ 	default:
+ 	}
+ 
+-	c.Logger.Debugf("reconnect for conn closed: %v", err)
++	c.Logger.Infof("conn closed: %v, last data from server %s ago", err, time.Since(c.lastPongAt).Truncate(time.Millisecond))
+ 
+ 	c.reconnecting()
+ }
 @@ -440,71 +440,30 @@ func (c *client) closeByServer(packet *protocol.Packet) {
  	c.reconnecting()
  }

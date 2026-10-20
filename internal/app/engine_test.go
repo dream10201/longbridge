@@ -125,7 +125,7 @@ func TestLongPortSessionAuthFailureDetection(t *testing.T) {
 
 func TestLongPortSDKLoggerSignalsSessionAuthFailure(t *testing.T) {
 	ch := make(chan struct{}, 1)
-	logger := newLongPortSDKLogger(nil, ch)
+	logger := newLongPortSDKLogger("quote", nil, ch)
 
 	logger.Error("reconnect failed, err: reconnect request: longbridge protocol api error, status:5 code:401 message:token is not exists")
 
