@@ -307,6 +307,7 @@ func (e *Engine) syncPendingOrder(ctx context.Context, stock StockConfig, state 
 				)
 			}
 		} else {
+			clearTrailingAfterUnfilled(s, state.Pending.Side)
 			s.LastDecision = fmt.Sprintf("订单已结束，状态=%s", detail.Status)
 			if e.logger != nil {
 				e.logger.Printf(

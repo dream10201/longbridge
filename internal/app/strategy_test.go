@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -348,5 +349,57 @@ func TestEvaluateStrategyDoesNotSellImmediatelyWhenJustArmedAtBaseTarget(t *test
 
 	if decision.Action == ActionSell {
 		t.Fatalf("expected no sell without actual pullback, got %s", decision.Action)
+	}
+}
+
+func TestEvaluateStrategySkipsBuyWhenPriceGapsAboveTrigger(t *testing.T) {
+	input := StrategyInput{
+		Config: StockConfig{
+			Symbol: "TSLA.US", InitialPrice: mustDecimal(t, "350"), SellPercent: mustDecimal(t, "3.8"),
+			TrailPercent: mustDecimal(t, "1.8"), BuyPercent: mustDecimal(t, "7"), MinProfit: mustDecimal(t, "30"),
+			MaxLots: 4, OrderQuantity: 10,
+		},
+		CurrentPrice: mustDecimal(t, "380"),
+		State:        SymbolState{BuyArmed: true, BuyLowest: "345"},
+		MarketOpen:   true,
+	}
+	got := EvaluateStrategy(input)
+	if got.Action != ActionNone {
+		t.Fatalf("expected no buy when price gapped far above trigger, got %+v", got)
+	}
+	if !strings.Contains(got.Reason, "放弃本次买入") {
+		t.Fatalf("unexpected reason %q", got.Reason)
+	}
+
+	input.CurrentPrice = mustDecimal(t, "356")
+	if got := EvaluateStrategy(input); got.Action != ActionBuy {
+		t.Fatalf("expected buy within chase limit, got %+v", got)
+	}
+}
+
+func TestEvaluateStrategySkipsSellWhenPriceGapsBelowTrigger(t *testing.T) {
+	input := StrategyInput{
+		Config: StockConfig{
+			Symbol: "TSLA.US", InitialPrice: mustDecimal(t, "350"), SellPercent: mustDecimal(t, "3.8"),
+			TrailPercent: mustDecimal(t, "1.8"), BuyPercent: mustDecimal(t, "7"), MinProfit: mustDecimal(t, "30"),
+			MaxLots: 1, OrderQuantity: 10,
+		},
+		CurrentPrice: mustDecimal(t, "355"),
+		PositionQty:  10,
+		AvailableQty: 10,
+		State:        SymbolState{BuyLadder: []string{"352"}, SellArmed: true, SellHighest: "370"},
+		MarketOpen:   true,
+	}
+	got := EvaluateStrategy(input)
+	if got.Action != ActionNone {
+		t.Fatalf("expected no sell when price gapped far below trigger, got %+v", got)
+	}
+	if !strings.Contains(got.Reason, "放弃本次卖出") {
+		t.Fatalf("unexpected reason %q", got.Reason)
+	}
+
+	input.CurrentPrice = mustDecimal(t, "363.3")
+	if got := EvaluateStrategy(input); got.Action != ActionSell {
+		t.Fatalf("expected sell within gap floor, got %+v", got)
 	}
 }

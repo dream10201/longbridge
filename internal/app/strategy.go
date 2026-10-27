@@ -96,20 +96,28 @@ func EvaluateStrategy(input StrategyInput) Decision {
 			if input.CurrentPrice.LessThan(*lowest) {
 				lowest = &input.CurrentPrice
 			}
-			trailingTarget := calcUpTarget(*lowest, input.Config.TrailPercent)
-			target := decimalMin(plan.BaseTarget, trailingTarget)
-			if input.CurrentPrice.GreaterThan(*lowest) && input.CurrentPrice.GreaterThanOrEqual(target) {
+			target := trailingBuyTarget(plan.BaseTarget, *lowest, input.Config.TrailPercent)
+			chaseLimit := calcUpTarget(target, input.Config.TrailPercent)
+			switch {
+			case input.CurrentPrice.GreaterThan(chaseLimit):
+				buyWait = &Decision{
+					TriggerPrice:   target,
+					ReferencePrice: plan.Reference,
+					Reason:         fmt.Sprintf("现价 %.2f 已高于追踪买入上限 %.2f，放弃本次买入", input.CurrentPrice.InexactFloat64(), chaseLimit.InexactFloat64()),
+				}
+			case input.CurrentPrice.GreaterThan(*lowest) && input.CurrentPrice.GreaterThanOrEqual(target):
 				return Decision{
 					Action:         ActionBuy,
 					TriggerPrice:   target,
 					ReferencePrice: plan.Reference,
 					Reason:         fmt.Sprintf("追踪买入触发，最低 %.2f，反弹到 %.2f 买入", lowest.InexactFloat64(), target.InexactFloat64()),
 				}
-			}
-			buyWait = &Decision{
-				TriggerPrice:   target,
-				ReferencePrice: plan.Reference,
-				Reason:         fmt.Sprintf("追踪买入中，最低 %.2f，反弹到 %.2f 买入", lowest.InexactFloat64(), target.InexactFloat64()),
+			default:
+				buyWait = &Decision{
+					TriggerPrice:   target,
+					ReferencePrice: plan.Reference,
+					Reason:         fmt.Sprintf("追踪买入中，最低 %.2f，反弹到 %.2f 买入", lowest.InexactFloat64(), target.InexactFloat64()),
+				}
 			}
 		}
 	}
@@ -174,8 +182,16 @@ func resolveSellWait(input StrategyInput, currentLots int64, canSellOne bool, la
 	if highest == nil || input.CurrentPrice.GreaterThan(*highest) {
 		highest = &input.CurrentPrice
 	}
-	trailingTarget := calcDownTarget(*highest, input.Config.TrailPercent)
-	target := decimalMax(baseTarget, trailingTarget)
+	target := trailingSellTarget(baseTarget, *highest, input.Config.TrailPercent)
+	gapFloor := calcDownTarget(target, input.Config.TrailPercent)
+	if input.CurrentPrice.LessThan(gapFloor) {
+		return &Decision{
+			TriggerPrice:   target,
+			ReferencePrice: *lastBuy,
+			ExpectedProfit: expectedProfit,
+			Reason:         fmt.Sprintf("现价 %.2f 已低于追踪止盈下限 %.2f，放弃本次卖出", input.CurrentPrice.InexactFloat64(), gapFloor.InexactFloat64()),
+		}
+	}
 	if input.CurrentPrice.LessThan(*highest) && input.CurrentPrice.LessThanOrEqual(target) {
 		return &Decision{
 			Action:         ActionSell,
@@ -191,6 +207,16 @@ func resolveSellWait(input StrategyInput, currentLots int64, canSellOne bool, la
 		ExpectedProfit: expectedProfit,
 		Reason:         fmt.Sprintf("追踪止盈中，最高 %.2f，回撤到 %.2f 卖出", highest.InexactFloat64(), target.InexactFloat64()),
 	}
+}
+
+// trailingBuyTarget 是追踪买入触发价:最低价反弹 trail 后买入,但不高于基础买价。
+func trailingBuyTarget(baseTarget, lowest, trailPercent decimal.Decimal) decimal.Decimal {
+	return decimalMin(baseTarget, calcUpTarget(lowest, trailPercent))
+}
+
+// trailingSellTarget 是追踪止盈触发价:最高价回撤 trail 后卖出,但不低于基础卖价。
+func trailingSellTarget(baseTarget, highest, trailPercent decimal.Decimal) decimal.Decimal {
+	return decimalMax(baseTarget, calcDownTarget(highest, trailPercent))
 }
 
 func calcUpTarget(base, percent decimal.Decimal) decimal.Decimal {

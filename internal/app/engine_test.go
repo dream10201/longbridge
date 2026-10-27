@@ -943,3 +943,52 @@ func TestNormalizeStateWithPositionSkipsReconcileWhilePending(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateTrailingBuyStateClearsWhenPriceGapsAboveTrigger(t *testing.T) {
+	store, err := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &Engine{state: store}
+	stock := StockConfig{Symbol: "TSLA.US", InitialPrice: mustDecimal(t, "350"), BuyPercent: mustDecimal(t, "7"), TrailPercent: mustDecimal(t, "1.8"), MaxLots: 4, OrderQuantity: 10}
+	armed := SymbolState{BuyArmed: true, BuyLowest: "345"}
+
+	kept := engine.updateTrailingBuyState(stock, PositionSnapshot{}, mustDecimal(t, "356"), nil, armed)
+	if !kept.BuyArmed || kept.BuyLowest != "345" {
+		t.Fatalf("expected trailing kept within chase limit, got %+v", kept)
+	}
+	cleared := engine.updateTrailingBuyState(stock, PositionSnapshot{}, mustDecimal(t, "380"), nil, armed)
+	if cleared.BuyArmed || cleared.BuyLowest != "" {
+		t.Fatalf("expected trailing cleared after gap up, got %+v", cleared)
+	}
+}
+
+func TestUpdateTrailingSellStateClearsWhenPriceGapsBelowTrigger(t *testing.T) {
+	store, err := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &Engine{state: store}
+	stock := StockConfig{Symbol: "TSLA.US", SellPercent: mustDecimal(t, "3.8"), TrailPercent: mustDecimal(t, "1.8"), MinProfit: mustDecimal(t, "30"), MaxLots: 4, OrderQuantity: 10}
+	pos := PositionSnapshot{Quantity: 10, Available: 10}
+	armed := SymbolState{BuyLadder: []string{"352"}, SellArmed: true, SellHighest: "370"}
+
+	kept := engine.updateTrailingSellState(stock, pos, mustDecimal(t, "363.3"), nil, armed)
+	if !kept.SellArmed || kept.SellHighest != "370" {
+		t.Fatalf("expected trailing kept within gap floor, got %+v", kept)
+	}
+	cleared := engine.updateTrailingSellState(stock, pos, mustDecimal(t, "355"), nil, armed)
+	if cleared.SellArmed || cleared.SellHighest != "" {
+		t.Fatalf("expected trailing cleared after gap down, got %+v", cleared)
+	}
+}
+
+func TestClearTrailingAfterUnfilledOnlyTouchesOrderSide(t *testing.T) {
+	state := SymbolState{BuyArmed: true, BuyLowest: "345", SellArmed: true, SellHighest: "370"}
+	if !clearTrailingAfterUnfilled(&state, ActionSell) || state.SellArmed || !state.BuyArmed {
+		t.Fatalf("expected only sell trailing cleared, got %+v", state)
+	}
+	if !clearTrailingAfterUnfilled(&state, ActionBuy) || state.BuyArmed {
+		t.Fatalf("expected buy trailing cleared, got %+v", state)
+	}
+}

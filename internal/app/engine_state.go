@@ -220,10 +220,14 @@ func (e *Engine) updateTrailingBuyState(stock StockConfig, position PositionSnap
 	changed := false
 	if state.BuyArmed {
 		lowest := decimalStringPtr(state.BuyLowest)
-		if lowest == nil || lowest.GreaterThan(plan.BaseTarget) {
-			if clearTrailingBuyState(&state) {
-				changed = true
-			}
+		stale := lowest == nil || lowest.GreaterThan(plan.BaseTarget)
+		// 价格跳过触发价太多(超过 trail)时视为错过本档,放弃追单,等待重新回落。
+		if !stale {
+			chaseLimit := calcUpTarget(trailingBuyTarget(plan.BaseTarget, *lowest, stock.TrailPercent), stock.TrailPercent)
+			stale = currentPrice.GreaterThan(chaseLimit)
+		}
+		if stale && clearTrailingBuyState(&state) {
+			changed = true
 		}
 	}
 	if currentPrice.LessThanOrEqual(plan.BaseTarget) {
@@ -269,6 +273,15 @@ func (e *Engine) updateTrailingSellState(stock StockConfig, position PositionSna
 	baseTarget := calcUpTarget(*lastBuy, stock.SellPercent)
 	expectedProfit := currentPrice.Sub(*lastBuy).Mul(decimal.NewFromInt(stock.OrderQuantity))
 	changed := false
+	if state.SellArmed {
+		// 价格跳空跌破触发价太多(超过 trail)时视为错过本档,不再以触发价挂单,等待重新站上基础卖价。
+		if highest := decimalStringPtr(state.SellHighest); highest != nil {
+			gapFloor := calcDownTarget(trailingSellTarget(baseTarget, *highest, stock.TrailPercent), stock.TrailPercent)
+			if currentPrice.LessThan(gapFloor) && clearTrailingSellState(&state) {
+				changed = true
+			}
+		}
+	}
 	if currentPrice.GreaterThanOrEqual(baseTarget) && !expectedProfit.LessThan(stock.MinProfit) {
 		if !state.SellArmed {
 			state.SellArmed = true
@@ -287,6 +300,18 @@ func (e *Engine) updateTrailingSellState(stock StockConfig, position PositionSna
 		*s = state
 	})
 	return e.state.Get(stock.Symbol)
+}
+
+// clearTrailingAfterUnfilled 在挂单零成交终态(超时撤单、拒单)后清除该方向的追踪状态,避免同一触发反复挂撤。
+func clearTrailingAfterUnfilled(state *SymbolState, side ActionType) bool {
+	switch side {
+	case ActionBuy:
+		return clearTrailingBuyState(state)
+	case ActionSell:
+		return clearTrailingSellState(state)
+	default:
+		return false
+	}
 }
 
 func clearTrailingSellState(state *SymbolState) bool {
