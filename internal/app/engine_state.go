@@ -9,6 +9,10 @@ import (
 )
 
 func (e *Engine) normalizeStateWithPosition(stock StockConfig, position PositionSnapshot, state SymbolState) SymbolState {
+	// 挂单部分成交时券商持仓会先于阶梯更新,此时不能按持仓重建阶梯。
+	if state.Pending != nil {
+		return state
+	}
 	currentLots := lotsFromQuantity(position.Quantity, stock.OrderQuantity)
 	changed := false
 	mismatch := int64(len(state.BuyLadder)) != currentLots

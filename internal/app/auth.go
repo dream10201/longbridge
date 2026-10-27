@@ -22,6 +22,7 @@ const (
 	longbridgeAccessTokenKey = "LONGBRIDGE_ACCESS_TOKEN"
 	longportAccessTokenKey   = "LONGPORT_ACCESS_TOKEN"
 	defaultRefreshHTTPURL    = "https://openapi.longbridge.com"
+	accessTokenLifetime      = 90 * 24 * time.Hour
 )
 
 type AccessTokenManager struct {
@@ -148,7 +149,7 @@ func (m *AccessTokenManager) EnsureValid(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	refreshed, err := m.refreshAccessToken(ctx, token, expiresAt)
+	refreshed, err := m.refreshAccessToken(ctx, token)
 	if err != nil {
 		failedAt := time.Now().UTC()
 		m.lastRefreshAt = &failedAt
@@ -229,9 +230,9 @@ func (m *AccessTokenManager) Snapshot() AccessTokenStatus {
 	return status
 }
 
-func (m *AccessTokenManager) refreshAccessToken(ctx context.Context, token string, expiresAt time.Time) (*refreshAccessTokenResult, error) {
+func (m *AccessTokenManager) refreshAccessToken(ctx context.Context, token string) (*refreshAccessTokenResult, error) {
 	params := url.Values{}
-	params.Set("expired_at", expiresAt.UTC().Format(time.RFC3339))
+	params.Set("expired_at", time.Now().UTC().Add(accessTokenLifetime).Format(time.RFC3339))
 
 	header := http.Header{}
 	header.Set("Authorization", token)

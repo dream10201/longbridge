@@ -37,7 +37,10 @@ func NewHTTPHandler(engine *Engine, server ServerConfig) http.Handler {
 		panic(err)
 	}
 	staticHandler := http.FileServer(http.FS(staticAssets))
-	mux.Handle("/", authMiddleware(server, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	if engine != nil && engine.authSecret.Load() == nil {
+		engine.setAuthSecret(server.AuthSecret)
+	}
+	mux.Handle("/", authMiddleware(engine.AuthSecret, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if path == "/api/status" || strings.HasSuffix(path, "/api/status") {
 			body, err := json.Marshal(engine.Snapshot())
@@ -73,14 +76,16 @@ func NewHTTPHandler(engine *Engine, server ServerConfig) http.Handler {
 const authHeaderName = "X-Admin-Secret"
 
 // authMiddleware 校验固定请求头（如反向代理通过 header_up 注入的密钥）。
-// 未配置 auth_secret 时不启用；比较使用常量时间算法避免时序侧信道。
-func authMiddleware(server ServerConfig, next http.Handler) http.Handler {
-	if server.AuthSecret == "" {
-		return next
-	}
+// 密钥每次请求时读取,配置热加载后立即生效;为空时不启用;比较使用常量时间算法避免时序侧信道。
+func authMiddleware(secret func() string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		want := secret()
+		if want == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		got := r.Header.Get(authHeaderName)
-		if subtle.ConstantTimeCompare([]byte(got), []byte(server.AuthSecret)) != 1 {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

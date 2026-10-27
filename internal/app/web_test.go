@@ -149,3 +149,33 @@ func TestHTTPHandlerAuthDisabledByDefault(t *testing.T) {
 		t.Fatalf("expected 200 when auth disabled, got %d", rec.Code)
 	}
 }
+
+func TestHTTPHandlerAuthSecretFollowsReload(t *testing.T) {
+	engine := &Engine{}
+	handler := NewHTTPHandler(engine, ServerConfig{AuthSecret: "old"})
+
+	engine.setAuthSecret("new")
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	req.Header.Set(authHeaderName, "old")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected old secret rejected after reload, got %d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	req.Header.Set(authHeaderName, "new")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected new secret accepted after reload, got %d", rec.Code)
+	}
+
+	engine.setAuthSecret("")
+	req = httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected auth disabled after secret cleared, got %d", rec.Code)
+	}
+}

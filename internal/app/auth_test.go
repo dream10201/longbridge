@@ -95,8 +95,12 @@ func TestAccessTokenManagerRefreshAndPersist(t *testing.T) {
 	if gotAPIKey != "test-app-key" {
 		t.Fatalf("expected x-api-key header %q, got %q", "test-app-key", gotAPIKey)
 	}
-	if gotExpiredAt != oldExpiresAt.Format(time.RFC3339) {
-		t.Fatalf("expected expired_at %q, got %q", oldExpiresAt.Format(time.RFC3339), gotExpiredAt)
+	requestedExpiry, err := time.Parse(time.RFC3339, gotExpiredAt)
+	if err != nil {
+		t.Fatalf("expected RFC3339 expired_at, got %q: %v", gotExpiredAt, err)
+	}
+	if drift := time.Until(requestedExpiry) - accessTokenLifetime; drift > time.Minute || drift < -time.Minute {
+		t.Fatalf("expected expired_at about %s from now, got %q", accessTokenLifetime, gotExpiredAt)
 	}
 	if !strings.Contains(gotSignature, "Signature=") {
 		t.Fatalf("expected signed request, got x-api-signature %q", gotSignature)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	lbquote "github.com/longbridge/openapi-go/quote"
@@ -177,6 +178,8 @@ type Engine struct {
 	statusMu sync.RWMutex
 	status   DashboardSnapshot
 
+	authSecret atomic.Pointer[string]
+
 	cycleCount uint64
 }
 
@@ -253,6 +256,7 @@ func NewEngine(cfg *Config, logger *log.Logger) (*Engine, error) {
 	if stat, err := os.Stat(cfg.FilePath); err == nil {
 		engine.cfgModTime = stat.ModTime()
 	}
+	engine.setAuthSecret(cfg.Server.AuthSecret)
 
 	if err := engine.bootstrap(context.Background()); err != nil {
 		_ = client.Close()
@@ -283,6 +287,21 @@ func (e *Engine) Snapshot() DashboardSnapshot {
 	e.statusMu.RLock()
 	defer e.statusMu.RUnlock()
 	return e.status
+}
+
+func (e *Engine) setAuthSecret(secret string) {
+	e.authSecret.Store(&secret)
+}
+
+// AuthSecret 返回当前生效的面板访问密钥,配置热加载后随之更新。
+func (e *Engine) AuthSecret() string {
+	if e == nil {
+		return ""
+	}
+	if secret := e.authSecret.Load(); secret != nil {
+		return *secret
+	}
+	return ""
 }
 
 func (e *Engine) bootstrap(ctx context.Context) error {
@@ -829,9 +848,8 @@ func (e *Engine) reloadConfigIfChanged(ctx context.Context) {
 		return
 	}
 	if nextCfg.Engine.StateFile != e.cfg.Engine.StateFile {
-		e.logger.Printf("检测到 engine.state_file 变化，运行中不切换状态文件，继续使用当前配置")
-		e.cfgModTime = stat.ModTime()
-		return
+		e.logger.Printf("检测到 engine.state_file 变化，运行中不切换状态文件，仍使用 %s，其余配置正常热加载", e.cfg.Engine.StateFile)
+		nextCfg.Engine.StateFile = e.cfg.Engine.StateFile
 	}
 	if nextCfg.Server.Address() != e.cfg.Server.Address() {
 		e.logger.Printf("检测到 server 地址变化，当前进程不会热切换监听地址: %s -> %s", e.cfg.Server.Address(), nextCfg.Server.Address())
@@ -844,6 +862,7 @@ func (e *Engine) reloadConfigIfChanged(ctx context.Context) {
 	oldCfg := e.cfg
 	e.cfg = nextCfg
 	e.cfgModTime = stat.ModTime()
+	e.setAuthSecret(nextCfg.Server.AuthSecret)
 	e.statusMu.Lock()
 	e.status.DryRun = nextCfg.Engine.DryRun
 	e.status.ListenAddress = oldCfg.Server.Address()

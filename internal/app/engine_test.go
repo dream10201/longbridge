@@ -920,3 +920,26 @@ func TestOutsideRTHForPhase(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeStateWithPositionSkipsReconcileWhilePending(t *testing.T) {
+	store, err := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Update("AAPL.US", func(s *SymbolState) {
+		s.BuyLadder = []string{"100", "98"}
+		s.LastBuyPrice = "98"
+		s.SellAnchors = []string{"105"}
+		s.Pending = &PendingOrderState{OrderID: "o1", Side: ActionBuy, SubmittedQty: 10}
+	})
+	engine := &Engine{state: store}
+	stock := StockConfig{Symbol: "AAPL.US", OrderQuantity: 10}
+	partial := PositionSnapshot{Quantity: 25, Available: 25, CostPrice: mustDecimal(t, "99"), HasCost: true}
+
+	for range 3 {
+		got := engine.normalizeStateWithPosition(stock, partial, store.Get("AAPL.US"))
+		if len(got.BuyLadder) != 2 || got.LastBuyPrice != "98" || len(got.SellAnchors) != 1 || got.LadderMismatchCycles != 0 {
+			t.Fatalf("expected ladder untouched while order pending, got %+v", got)
+		}
+	}
+}
