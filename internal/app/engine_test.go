@@ -992,3 +992,19 @@ func TestClearTrailingAfterUnfilledOnlyTouchesOrderSide(t *testing.T) {
 		t.Fatalf("expected buy trailing cleared, got %+v", state)
 	}
 }
+
+func TestShouldSkipOffHoursCycle(t *testing.T) {
+	cases := []struct {
+		open, pending, synced, want bool
+	}{
+		{open: true, synced: true, want: false},
+		{open: false, synced: false, want: false},
+		{open: false, pending: true, synced: true, want: false},
+		{open: false, synced: true, want: true},
+	}
+	for _, c := range cases {
+		if got := shouldSkipOffHoursCycle(c.open, c.pending, c.synced); got != c.want {
+			t.Fatalf("open=%v pending=%v synced=%v: expected %v, got %v", c.open, c.pending, c.synced, c.want, got)
+		}
+	}
+}

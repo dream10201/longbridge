@@ -181,6 +181,8 @@ type Engine struct {
 	authSecret atomic.Pointer[string]
 
 	cycleCount uint64
+	// offHoursSynced 表示休市后已经完整同步过一轮,之后休市期间只刷新市场时钟,不再拉行情与账户数据。
+	offHoursSynced bool
 }
 
 type sessionTemplate struct {
@@ -190,7 +192,7 @@ type sessionTemplate struct {
 }
 
 const (
-	offHoursPollFallback     = 15 * time.Minute
+	offHoursPollFallback     = time.Hour
 	pendingOrderPollInterval = 30 * time.Second
 	minAdaptivePollDelay     = time.Second
 	nextTradingSearchDays    = 14
@@ -446,6 +448,14 @@ func (e *Engine) cycle(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if shouldSkipOffHoursCycle(marketClock.Open, e.hasPendingOrders(), e.offHoursSynced) {
+		e.statusMu.Lock()
+		e.status.LastUpdatedAt = time.Now().UTC()
+		e.status.AccessToken = e.auth.Snapshot()
+		e.status.Market = marketClock
+		e.statusMu.Unlock()
+		return nil
+	}
 
 	symbols := e.enabledSymbols()
 	quotes, err := e.client.QuoteList(reqCtx, symbols)
@@ -511,7 +521,13 @@ func (e *Engine) cycle(ctx context.Context) error {
 	}
 	e.status.Symbols = snapshots
 	e.statusMu.Unlock()
+	e.offHoursSynced = !marketClock.Open
 	return nil
+}
+
+// shouldSkipOffHoursCycle 判断本轮是否只刷新市场时钟:休市、无挂单且休市后已完整同步过一轮。
+func shouldSkipOffHoursCycle(marketOpen, hasPending, offHoursSynced bool) bool {
+	return !marketOpen && !hasPending && offHoursSynced
 }
 
 // syncSymbolPending 恢复/同步该股票的挂单;挂单终态后重新拉取持仓。
