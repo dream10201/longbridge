@@ -329,7 +329,8 @@ function renderStockCard(stock, state, limited) {
     '<header class="stock-head">' +
       '<div class="stock-id"><h3>' + esc(stock.symbol) + '</h3><span class="badge ' + esc(state.kind) + '">' + esc(state.label) + '</span></div>' +
       '<div class="stock-quote"><div class="price ' + esc(trend) + '">' + fmtNumber(stock.price) + '</div>' +
-        (change ? '<div class="change ' + esc(trend) + '">' + trendIcon + ' ' + change + '</div>' : "") + '</div>' +
+        (change ? '<div class="change ' + esc(trend) + '">' + trendIcon + ' ' + change + '</div>' : "") +
+        (stock.prev_close ? '<div class="prev-close">昨收 ' + fmtNumber(stock.prev_close) + '</div>' : "") + '</div>' +
     '</header>' +
     '<p class="stock-next ' + esc(state.kind) + '">' + esc(state.text) + '</p>' +
     '<div class="sides">' + renderSide(stock, state.buy, true, limited) + renderSide(stock, state.sell, false, limited) + '</div>' +

@@ -22,6 +22,14 @@ func quoteChange(quote *lbquote.SecurityQuote, phase MarketPhase) (decimal.Decim
 	return change, changePct, trend, true
 }
 
+func quotePrevClose(quote *lbquote.SecurityQuote, phase MarketPhase) (decimal.Decimal, bool) {
+	point, ok := resolveQuotePricePoint(quote, phase)
+	if !ok || point.prevClose == nil || !point.prevClose.IsPositive() {
+		return decimal.Zero, false
+	}
+	return *point.prevClose, true
+}
+
 type quotePricePoint struct {
 	price     decimal.Decimal
 	prevClose *decimal.Decimal

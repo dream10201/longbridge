@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-//go:embed web/dashboard.html web/dashboard.css web/dashboard.js
+//go:embed web/dashboard.html web/dashboard.css web/dashboard.js web/config-editor.css web/config-editor.js
 var dashboardAssets embed.FS
 
 var dashboardTemplate = template.Must(template.New("dashboard.html").Funcs(template.FuncMap{
@@ -58,6 +58,10 @@ func NewHTTPHandler(engine *Engine, server ServerConfig) http.Handler {
 				return
 			}
 			_, _ = w.Write(body)
+			return
+		}
+		if path == "/api/config" || strings.HasSuffix(path, "/api/config") {
+			engine.handleConfigAPI(w, r)
 			return
 		}
 		if idx := strings.LastIndex(path, "/static/"); idx >= 0 {

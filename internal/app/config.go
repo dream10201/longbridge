@@ -60,47 +60,47 @@ type StockConfig struct {
 }
 
 type rawConfig struct {
-	Server rawServerConfig  `toml:"server"`
-	Engine rawEngineConfig  `toml:"engine"`
-	Stocks []rawStockConfig `toml:"stocks"`
+	Server rawServerConfig  `toml:"server" json:"server"`
+	Engine rawEngineConfig  `toml:"engine" json:"engine"`
+	Stocks []rawStockConfig `toml:"stocks" json:"stocks"`
 }
 
 type rawServerConfig struct {
-	Host       string `toml:"host"`
-	Port       int    `toml:"port"`
-	AuthSecret string `toml:"auth_secret"`
+	Host       string `toml:"host" json:"host"`
+	Port       int    `toml:"port" json:"port"`
+	AuthSecret string `toml:"auth_secret,omitempty" json:"auth_secret"`
 }
 
 type rawEngineConfig struct {
-	PollInterval             string `toml:"poll_interval"`
-	OrderTimeout             string `toml:"order_timeout"`
-	StateFile                string `toml:"state_file"`
-	DryRun                   bool   `toml:"dry_run"`
-	MaxExposure              string `toml:"max_exposure"`
-	CashLimit                string `toml:"cash_limit"`
-	CashLimitMode            string `toml:"cash_limit_mode"`
-	AccessTokenAutoRefresh   *bool  `toml:"access_token_auto_refresh"`
-	AccessTokenRefreshBefore string `toml:"access_token_refresh_before"`
-	AccessTokenEnvFile       string `toml:"access_token_env_file"`
-	TradeAPIWindow           string `toml:"trade_api_window"`
-	TradeAPIMaxCalls         int    `toml:"trade_api_max_calls"`
-	TradeAPIMinGap           string `toml:"trade_api_min_gap"`
-	QuoteRequestTimeout      string `toml:"quote_request_timeout"`
+	PollInterval             string `toml:"poll_interval" json:"poll_interval"`
+	OrderTimeout             string `toml:"order_timeout" json:"order_timeout"`
+	StateFile                string `toml:"state_file" json:"state_file"`
+	DryRun                   bool   `toml:"dry_run" json:"dry_run"`
+	MaxExposure              string `toml:"max_exposure" json:"max_exposure"`
+	CashLimit                string `toml:"cash_limit,omitempty" json:"-"`
+	CashLimitMode            string `toml:"cash_limit_mode,omitempty" json:"-"`
+	AccessTokenAutoRefresh   *bool  `toml:"access_token_auto_refresh" json:"access_token_auto_refresh"`
+	AccessTokenRefreshBefore string `toml:"access_token_refresh_before" json:"access_token_refresh_before"`
+	AccessTokenEnvFile       string `toml:"access_token_env_file" json:"access_token_env_file"`
+	TradeAPIWindow           string `toml:"trade_api_window" json:"trade_api_window"`
+	TradeAPIMaxCalls         int    `toml:"trade_api_max_calls" json:"trade_api_max_calls"`
+	TradeAPIMinGap           string `toml:"trade_api_min_gap" json:"trade_api_min_gap"`
+	QuoteRequestTimeout      string `toml:"quote_request_timeout" json:"quote_request_timeout"`
 }
 
 type rawStockConfig struct {
-	Symbol        string `toml:"symbol"`
-	InitialPrice  string `toml:"initial_price"`
-	SellPercent   string `toml:"sell_percent"`
-	TrailPercent  string `toml:"trail_percent"`
-	BuyPercent    string `toml:"buy_percent"`
-	MinProfit     string `toml:"min_profit"`
-	UseMargin     bool   `toml:"use_margin"`
-	MaxMargin     string `toml:"max_margin"`
-	MaxLots       int64  `toml:"max_lots"`
-	OrderQuantity int64  `toml:"order_quantity"`
-	Remark        string `toml:"remark"`
-	Enabled       *bool  `toml:"enabled"`
+	Symbol        string `toml:"symbol" json:"symbol"`
+	InitialPrice  string `toml:"initial_price" json:"initial_price"`
+	SellPercent   string `toml:"sell_percent" json:"sell_percent"`
+	TrailPercent  string `toml:"trail_percent" json:"trail_percent"`
+	BuyPercent    string `toml:"buy_percent" json:"buy_percent"`
+	MinProfit     string `toml:"min_profit" json:"min_profit"`
+	UseMargin     bool   `toml:"use_margin" json:"use_margin"`
+	MaxMargin     string `toml:"max_margin,omitempty" json:"-"`
+	MaxLots       int64  `toml:"max_lots" json:"max_lots"`
+	OrderQuantity int64  `toml:"order_quantity" json:"order_quantity"`
+	Remark        string `toml:"remark" json:"remark"`
+	Enabled       *bool  `toml:"enabled" json:"enabled"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -114,7 +114,11 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("读取配置文件失败: %w", err)
 	}
+	return parseConfig(body, absPath)
+}
 
+// parseConfig 解析 TOML 内容;absPath 只用于相对路径解析与错误提示。
+func parseConfig(body []byte, absPath string) (*Config, error) {
 	var raw rawConfig
 	meta, err := toml.Decode(string(body), &raw)
 	if err != nil {

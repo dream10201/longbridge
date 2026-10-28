@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>longbridge 状态面板</title>
   <link rel="stylesheet" href="static/dashboard.css">
+  <link rel="stylesheet" href="static/config-editor.css">
 </head>
 <body>
   <div class="wrap">
@@ -13,7 +14,10 @@
         <span class="brand-name">longbridge</span>
         <span class="pill" id="mode-pill"></span>
       </div>
-      <div class="top-meta" id="top-meta"></div>
+      <div class="top-right">
+        <div class="top-meta" id="top-meta"></div>
+        <button type="button" class="btn" id="open-config">配置</button>
+      </div>
     </header>
 
     <section class="kpis" id="kpis"></section>
@@ -44,5 +48,6 @@
 
   <script id="initial-status" type="application/json">{{toJSON .}}</script>
   <script src="static/dashboard.js" defer></script>
+  <script src="static/config-editor.js" defer></script>
 </body>
 </html>

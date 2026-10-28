@@ -50,6 +50,7 @@ type SymbolSnapshot struct {
 	PriceChange            string        `json:"price_change,omitempty"`
 	PriceChangePct         string        `json:"price_change_pct,omitempty"`
 	PriceTrend             string        `json:"price_trend,omitempty"`
+	PrevClose              string        `json:"prev_close,omitempty"`
 	PositionQty            int64         `json:"position_qty"`
 	AvailableQty           int64         `json:"available_qty"`
 	PositionNotional       string        `json:"position_notional,omitempty"`
@@ -161,6 +162,7 @@ type CashInfoSnapshot struct {
 type Engine struct {
 	cfg        *Config
 	cfgModTime time.Time
+	configPath string
 	logger     *log.Logger
 	client     *LongPortClient
 	auth       *AccessTokenManager
@@ -169,7 +171,11 @@ type Engine struct {
 
 	marketTZ  *time.Location
 	displayTZ *time.Location
+	staticMu  sync.RWMutex
 	static    map[string]*lbquote.StaticInfo
+
+	// reloadRequests 由 Web 配置接口投递,在 Run 循环的 goroutine 内立即重新加载配置并回传结果。
+	reloadRequests chan chan error
 
 	marketMu         sync.RWMutex
 	sessionTemplates []sessionTemplate
@@ -238,7 +244,9 @@ func NewEngine(cfg *Config, logger *log.Logger) (*Engine, error) {
 
 	engine := &Engine{
 		cfg:              cfg,
+		configPath:       cfg.FilePath,
 		logger:           logger,
+		reloadRequests:   make(chan chan error),
 		client:           client,
 		auth:             authManager,
 		state:            stateStore,
@@ -312,9 +320,11 @@ func (e *Engine) bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("读取股票静态信息失败: %w", err)
 	}
+	e.staticMu.Lock()
 	for _, item := range staticInfo {
 		e.static[item.Symbol] = item
 	}
+	e.staticMu.Unlock()
 	for _, stock := range e.cfg.Stocks {
 		if !stock.Enabled {
 			continue
@@ -360,6 +370,11 @@ func (e *Engine) Run(ctx context.Context) error {
 				<-timer.C
 			}
 			return ctx.Err()
+		case reply := <-e.reloadRequests:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			reply <- e.reloadConfig(ctx, true)
 		case <-sessionAuthFailure:
 			if !timer.Stop() {
 				<-timer.C
@@ -625,6 +640,9 @@ func (e *Engine) processSymbol(cc *cycleContext, stock StockConfig) SymbolSnapsh
 			snapshot.PriceChangePct = changePct.StringFixed(2)
 			snapshot.PriceTrend = trend
 		}
+		if prevClose, ok := quotePrevClose(quoteItem, cc.marketClock.CurrentPhase); ok {
+			snapshot.PrevClose = prevClose.StringFixed(2)
+		}
 	}
 	if position.HasCost {
 		snapshot.CostPrice = position.CostPrice.StringFixed(4)
@@ -845,23 +863,60 @@ func (e *Engine) rebuildClientAfterSessionAuthFailure() error {
 	return nil
 }
 
+// ApplyConfig 让引擎立即重新加载配置文件,并返回加载结果;引擎未在运行时随 ctx 超时返回。
+func (e *Engine) ApplyConfig(ctx context.Context) error {
+	if e == nil || e.reloadRequests == nil {
+		return fmt.Errorf("引擎未运行")
+	}
+	reply := make(chan error, 1)
+	select {
+	case e.reloadRequests <- reply:
+	case <-ctx.Done():
+		return fmt.Errorf("等待引擎空闲超时: %w", ctx.Err())
+	}
+	select {
+	case err := <-reply:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("等待引擎应用配置超时: %w", ctx.Err())
+	}
+}
+
+// LotSize 返回已知股票的每手股数,未知时返回 0。
+func (e *Engine) LotSize(symbol string) int32 {
+	if e == nil {
+		return 0
+	}
+	e.staticMu.RLock()
+	defer e.staticMu.RUnlock()
+	if info := e.static[symbol]; info != nil {
+		return info.LotSize
+	}
+	return 0
+}
+
 func (e *Engine) reloadConfigIfChanged(ctx context.Context) {
+	if err := e.reloadConfig(ctx, false); err != nil {
+		e.logger.Printf("%v", err)
+	}
+}
+
+// reloadConfig 在文件变化(或 force)时重新加载配置;返回的错误均附带"继续使用当前配置"语义。
+func (e *Engine) reloadConfig(ctx context.Context, force bool) error {
 	if e == nil || e.cfg == nil || e.cfg.FilePath == "" {
-		return
+		return nil
 	}
 	stat, err := os.Stat(e.cfg.FilePath)
 	if err != nil {
-		e.logger.Printf("检查配置文件失败，继续使用当前配置: %v", err)
-		return
+		return fmt.Errorf("检查配置文件失败，继续使用当前配置: %w", err)
 	}
-	if !e.cfgModTime.IsZero() && !stat.ModTime().After(e.cfgModTime) {
-		return
+	if !force && !e.cfgModTime.IsZero() && !stat.ModTime().After(e.cfgModTime) {
+		return nil
 	}
 
 	nextCfg, err := LoadConfig(e.cfg.FilePath)
 	if err != nil {
-		e.logger.Printf("重新加载配置失败，继续使用当前配置: %v", err)
-		return
+		return fmt.Errorf("重新加载配置失败，继续使用当前配置: %w", err)
 	}
 	if nextCfg.Engine.StateFile != e.cfg.Engine.StateFile {
 		e.logger.Printf("检测到 engine.state_file 变化，运行中不切换状态文件，仍使用 %s，其余配置正常热加载", e.cfg.Engine.StateFile)
@@ -871,8 +926,7 @@ func (e *Engine) reloadConfigIfChanged(ctx context.Context) {
 		e.logger.Printf("检测到 server 地址变化，当前进程不会热切换监听地址: %s -> %s", e.cfg.Server.Address(), nextCfg.Server.Address())
 	}
 	if err := e.ensureStaticInfo(ctx, nextCfg); err != nil {
-		e.logger.Printf("配置已读取但静态信息校验失败，继续使用当前配置: %v", err)
-		return
+		return fmt.Errorf("配置已读取但静态信息校验失败，继续使用当前配置: %w", err)
 	}
 
 	oldCfg := e.cfg
@@ -894,6 +948,7 @@ func (e *Engine) reloadConfigIfChanged(ctx context.Context) {
 	if tradeLimiterNeedsReload(oldCfg.Engine, nextCfg.Engine) {
 		e.client.tradeLimiter = NewTradeLimiter(nextCfg.Engine.TradeAPIWindow, nextCfg.Engine.TradeAPIMaxCalls, nextCfg.Engine.TradeAPIMinGap)
 	}
+	return nil
 }
 
 func (e *Engine) ensureStaticInfo(ctx context.Context, cfg *Config) error {
@@ -911,11 +966,13 @@ func (e *Engine) ensureStaticInfo(ctx context.Context, cfg *Config) error {
 		if err != nil {
 			return fmt.Errorf("读取新增股票静态信息失败: %w", err)
 		}
+		e.staticMu.Lock()
 		for _, item := range items {
 			if item != nil {
 				e.static[item.Symbol] = item
 			}
 		}
+		e.staticMu.Unlock()
 	}
 	for _, stock := range cfg.Stocks {
 		if !stock.Enabled {
