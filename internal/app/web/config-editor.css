@@ -149,3 +149,4 @@ details.cfg-card[open] > summary { margin-bottom: 12px; }
   .mode-switch { grid-template-columns: 1fr; }
   .change { grid-template-columns: 1fr; gap: 2px; }
 }
+.cfg-modal .modal-body p { font-size: 13px; line-height: 1.6; }

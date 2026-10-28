@@ -567,9 +567,12 @@
       const index = parseInt(btn.dataset.index, 10);
       const stock = state.draft.stocks[index];
       const st = statusFor(normalizeSymbol(stock.symbol)) || {};
-      if (((st.position_qty || 0) > 0 || st.pending_order_id) && !window.confirm(normalizeSymbol(stock.symbol) + " 仍有" + heldText(st.position_qty || 0, st.pending_order_id) + "，移除后程序将不再管理它。确定移除？")) return;
-      state.draft.stocks.splice(index, 1);
-      renderBody();
+      const remove = () => { state.draft.stocks.splice(index, 1); renderBody(); };
+      if ((st.position_qty || 0) > 0 || st.pending_order_id) {
+        askConfirm(normalizeSymbol(stock.symbol) + " 仍有" + heldText(st.position_qty || 0, st.pending_order_id) + "，移除后程序将不再管理它。确定移除？", "移除").then((ok) => { if (ok) remove(); });
+        return;
+      }
+      remove();
       return;
     }
     if (action === "gen-remark") {
@@ -584,10 +587,12 @@
       return;
     }
     if (action === "gen-secret") {
-      if (!window.confirm("生成新密钥后，反向代理注入的 X-Admin-Secret 必须同步修改，否则保存后面板会立刻无法访问。继续？")) return;
-      const bytes = new Uint8Array(32);
-      crypto.getRandomValues(bytes);
-      setValue("server.auth_secret", Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(""));
+      askConfirm("生成新密钥后，反向代理注入的 X-Admin-Secret 必须同步修改，否则保存后面板会立刻无法访问。继续？", "生成").then((ok) => {
+        if (!ok) return;
+        const bytes = new Uint8Array(32);
+        crypto.getRandomValues(bytes);
+        setValue("server.auth_secret", Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(""));
+      });
     }
   }
 
@@ -619,6 +624,24 @@
   }
 
   // ---------- confirm & save ----------
+  function askConfirm(message, confirmLabel) {
+    return new Promise((resolve) => {
+      const modal = document.createElement("div");
+      modal.className = "cfg-modal-backdrop";
+      modal.innerHTML = '<div class="cfg-modal" role="dialog" aria-modal="true"><div class="modal-body"><p>' + esc(message) + "</p></div>" +
+        '<footer><span></span><div class="cfg-foot-actions"><button type="button" class="btn" data-modal="cancel">取消</button>' +
+        '<button type="button" class="btn danger" data-modal="confirm">' + esc(confirmLabel || "确定") + "</button></div></footer></div>";
+      modal.addEventListener("click", (event) => {
+        const btn = event.target.closest("[data-modal]");
+        if (event.target === modal || (btn && btn.dataset.modal === "cancel")) { modal.remove(); resolve(false); return; }
+        if (btn) { modal.remove(); resolve(true); }
+      });
+      document.body.appendChild(modal);
+      const confirmBtn = modal.querySelector('[data-modal="confirm"]');
+      if (confirmBtn) confirmBtn.focus();
+    });
+  }
+
   function openConfirm() {
     const result = analyze();
     if (result.errors.length || !result.changes.length) return;
@@ -780,9 +803,10 @@
   }
 
   function closeEditor(force) {
-    if (!drawer) return;
+    if (!drawer || !state.open) return;
     if (!force && state.draft && state.original && JSON.stringify(state.draft) !== JSON.stringify(state.original) && !state.saving) {
-      if (!window.confirm("有未保存的修改，确定放弃？")) return;
+      askConfirm("有未保存的修改，确定放弃？", "放弃修改").then((ok) => { if (ok) closeEditor(true); });
+      return;
     }
     state.open = false;
     state.draft = null;
