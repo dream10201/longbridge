@@ -291,6 +291,15 @@ func (e *Engine) syncPendingOrder(ctx context.Context, stock StockConfig, state 
 			s.LastBuyPrice = lastString(s.BuyLadder)
 			s.LastSellPrice = lastString(s.SellAnchors)
 			s.LastDecision = buildExecutionDecisionText(state.Pending.Side, detail.ExecutedPrice.InexactFloat64(), detail.ExecutedQuantity, state.Pending.SubmittedQty, fullLots, partialQty)
+			if detail.ChargeDetail != nil {
+				fee := detail.ChargeDetail.TotalAmount
+				s.LastFillFee = fee.StringFixed(4)
+				total := fee
+				if prev := decimalStringPtr(s.TotalFees); prev != nil {
+					total = total.Add(*prev)
+				}
+				s.TotalFees = total.StringFixed(4)
+			}
 			if e.logger != nil {
 				e.logger.Printf(
 					"%s 挂单已终态: order_id=%s side=%s status=%s submitted_price=%s submitted_qty=%d executed_price=%s executed_qty=%d full_lots=%d partial_qty=%d，已清除pending",

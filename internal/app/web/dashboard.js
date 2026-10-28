@@ -196,6 +196,7 @@ function recordStatusEvents(status) {
   const token = status.access_token || {};
   if (token.last_refresh_at && token.last_refresh_at !== prevToken.last_refresh_at) add("ok", "访问令牌已刷新：" + fmtDate(token.last_refresh_at));
   if (status.config_reloaded_at && status.config_reloaded_at !== (previousStatus || {}).config_reloaded_at) add("info", "配置已热加载：" + fmtDate(status.config_reloaded_at));
+  if (status.config_reload_error && status.config_reload_error_at !== (previousStatus || {}).config_reload_error_at) add("danger", "配置加载失败：" + status.config_reload_error);
   eventStream = eventStream.slice(0, 20);
   previousStatus = status;
 }
@@ -229,6 +230,7 @@ function renderTop(status) {
     pill(esc(marketPhaseText(market.current_phase)) + (market.trading_day ? "" : " · 非交易日"), market.open ? "ok" : "") +
     '<span class="pill ' + tokenClass + '" title="' + esc(tokenTitle) + '">' + tokenText + '</span>' +
     pill(pollText, pollClass) +
+    (status.config_reload_error ? '<span class="pill danger" title="' + esc(status.config_reload_error) + '">配置未生效</span>' : "") +
     '<span class="muted">刷新 ' + fmtTime(status.last_updated_at) + '</span>';
 }
 
@@ -302,7 +304,7 @@ function renderSide(stock, view, buy, limited) {
       kv("还能买", esc(stock.remaining_buy_lots ?? 0) + " 笔", limited.has(stock.symbol) ? "warn" : "")
     : kv("基础价", fmtNumber(view.base) + ' <span class="muted">参考 ' + fmtNumber(stock.next_sell_ref) + '</span>') +
       kv("追踪", trailText(stock, view, false)) +
-      kv("预估毛利", fmtNumber(stock.next_sell_profit));
+      kv("预估净利", fmtNumber(stock.next_sell_profit) + (toNumber(stock.next_sell_fee) ? ' <span class="muted">已扣费 ' + fmtNumber(stock.next_sell_fee) + '</span>' : ""));
   const reason = buy ? stock.next_buy_reason : stock.next_sell_reason;
   const tags = buy ? tagList(stock.buy_capacity_limit_tags, true) + tagList(stock.buy_capacity_detail_tags, false) : "";
   return '<section class="side ' + (buy ? "buy" : "sell") + (view.armed ? " armed" : "") + '">' +
@@ -324,6 +326,7 @@ function renderStockCard(stock, state, limited) {
     kv("最近买 / 卖", fmtNumber(stock.last_buy_price) + " / " + fmtNumber(stock.last_sell_price)) +
     kv("最近订单", esc(stock.last_order_status || "-") + (stock.last_order_msg ? ' <span class="muted">' + esc(stock.last_order_msg) + '</span>' : "")) +
     (stock.pending_order_id ? kv("挂单号", '<code>' + esc(stock.pending_order_id) + '</code>') : "") +
+    (stock.total_fees ? kv("成交费用", "最近 " + fmtNumber(stock.last_fill_fee) + ' <span class="muted">累计 ' + fmtNumber(stock.total_fees) + '</span>') : "") +
     (stock.remark ? kv("备注", esc(stock.remark)) : "");
   return '<article class="stock ' + esc(state.kind) + '">' +
     '<header class="stock-head">' +
@@ -427,6 +430,7 @@ function renderFoot(status) {
   document.getElementById("foot").innerHTML =
     '<span>配置 <code>' + esc(status.config_path || "-") + '</code></span>' +
     '<span>' + (status.config_reloaded_at ? "热加载 " + fmtDate(status.config_reloaded_at) : "启动后未热加载") + '</span>' +
+    (status.config_reload_error ? '<span class="danger">配置未生效：' + esc(status.config_reload_error) + '</span>' : "") +
     '<span>启动 ' + fmtDate(status.started_at) + '</span>';
 }
 

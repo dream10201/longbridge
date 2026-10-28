@@ -2,7 +2,6 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,10 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-const (
-	configApplyTimeout = 30 * time.Second
-	configBodyLimit    = 1 << 20
-)
+const configBodyLimit = 1 << 20
 
 type configResponse struct {
 	Path     string           `json:"path"`
@@ -34,6 +30,7 @@ type configUpdateRequest struct {
 
 type configUpdateResponse struct {
 	OK       bool     `json:"ok"`
+	Changed  bool     `json:"changed"`
 	Warnings []string `json:"warnings,omitempty"`
 }
 
@@ -128,25 +125,15 @@ func (e *Engine) handleConfigPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if bytes.Equal(bytes.TrimSpace(rendered), bytes.TrimSpace(previous)) {
-		writeJSON(w, http.StatusOK, configUpdateResponse{OK: true, Warnings: nextCfg.Warnings})
+		writeJSON(w, http.StatusOK, configUpdateResponse{OK: true, Changed: false, Warnings: nextCfg.Warnings})
 		return
 	}
 	if err := writeFileAtomic(path, rendered, 0o644); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("写入配置文件失败: %v", err))
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), configApplyTimeout)
-	defer cancel()
-	if err := e.ApplyConfig(ctx); err != nil {
-		if rollbackErr := writeFileAtomic(path, previous, 0o644); rollbackErr != nil {
-			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("应用失败: %v;回滚配置文件也失败: %v", err, rollbackErr))
-			return
-		}
-		writeJSONError(w, http.StatusUnprocessableEntity, fmt.Sprintf("引擎拒绝新配置,文件已回滚: %v", err))
-		return
-	}
-	writeJSON(w, http.StatusOK, configUpdateResponse{OK: true, Warnings: nextCfg.Warnings})
+	e.RequestReload()
+	writeJSON(w, http.StatusAccepted, configUpdateResponse{OK: true, Changed: true, Warnings: nextCfg.Warnings})
 }
 
 // ConfigPath 返回引擎启动时加载的配置文件路径;热加载不会改变它。
@@ -175,6 +162,12 @@ func fillRawDefaults(raw *rawConfig, cfg *Config) {
 	raw.Engine.TradeAPIMaxCalls = cfg.Engine.TradeAPIMaxCalls
 	raw.Engine.TradeAPIMinGap = firstNonEmpty(raw.Engine.TradeAPIMinGap, cfg.Engine.TradeAPIMinGap.String())
 	raw.Engine.QuoteRequestTimeout = firstNonEmpty(raw.Engine.QuoteRequestTimeout, cfg.Engine.QuoteRequestTimeout.String())
+	raw.Fees = rawFeeConfig{
+		CommissionPerShare: cfg.Fees.CommissionPerShare.String(), CommissionMin: cfg.Fees.CommissionMin.String(),
+		PlatformPerShare: cfg.Fees.PlatformPerShare.String(), PlatformMin: cfg.Fees.PlatformMin.String(),
+		SettlementPerShare: cfg.Fees.SettlementPerShare.String(), SettlementMin: cfg.Fees.SettlementMin.String(),
+		SECRate: cfg.Fees.SECRate.String(), FINRAPerShare: cfg.Fees.FINRAPerShare.String(),
+	}
 	for i := range raw.Stocks {
 		stock := &raw.Stocks[i]
 		stock.Symbol = strings.TrimSpace(strings.ToUpper(stock.Symbol))

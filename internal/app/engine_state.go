@@ -98,7 +98,7 @@ func (e *Engine) reconcileStrategyConfig(ctx context.Context, stock StockConfig,
 	}
 
 	signatureChanged := state.ConfigSignature != "" && state.ConfigSignature != signature
-	needsInvalidClear := state.ConfigSignature == "" && trailingStateInvalidForConfig(stock, position, costPrice, state)
+	needsInvalidClear := state.ConfigSignature == "" && trailingStateInvalidForConfig(stock, e.fees(), position, costPrice, state)
 	if !signatureChanged && !needsInvalidClear {
 		if state.ConfigSignature == signature {
 			return state, false
@@ -157,7 +157,7 @@ func strategyConfigSignature(stock StockConfig) string {
 	}, "|")
 }
 
-func trailingStateInvalidForConfig(stock StockConfig, position PositionSnapshot, costPrice *decimal.Decimal, state SymbolState) bool {
+func trailingStateInvalidForConfig(stock StockConfig, fees FeeConfig, position PositionSnapshot, costPrice *decimal.Decimal, state SymbolState) bool {
 	if state.BuyArmed {
 		plan, ok := resolveBuyPlan(StrategyInput{
 			Config:       stock,
@@ -184,7 +184,7 @@ func trailingStateInvalidForConfig(stock StockConfig, position PositionSnapshot,
 			return true
 		}
 		baseTarget := calcUpTarget(*lastBuy, stock.SellPercent)
-		expectedProfitAtHigh := highest.Sub(*lastBuy).Mul(decimal.NewFromInt(stock.OrderQuantity))
+		expectedProfitAtHigh := netProfit(fees, *lastBuy, *highest, stock.OrderQuantity)
 		if highest.LessThan(baseTarget) || expectedProfitAtHigh.LessThan(stock.MinProfit) {
 			return true
 		}
@@ -271,7 +271,7 @@ func (e *Engine) updateTrailingSellState(stock StockConfig, position PositionSna
 	}
 
 	baseTarget := calcUpTarget(*lastBuy, stock.SellPercent)
-	expectedProfit := currentPrice.Sub(*lastBuy).Mul(decimal.NewFromInt(stock.OrderQuantity))
+	expectedProfit := netProfit(e.fees(), *lastBuy, currentPrice, stock.OrderQuantity)
 	changed := false
 	if state.SellArmed {
 		// 价格跳空跌破触发价太多(超过 trail)时视为错过本档,不再以触发价挂单,等待重新站上基础卖价。

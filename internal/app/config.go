@@ -16,6 +16,7 @@ type Config struct {
 	BaseDir  string
 	Server   ServerConfig
 	Engine   EngineConfig
+	Fees     FeeConfig
 	Stocks   []StockConfig
 	Warnings []string
 }
@@ -62,7 +63,19 @@ type StockConfig struct {
 type rawConfig struct {
 	Server rawServerConfig  `toml:"server" json:"server"`
 	Engine rawEngineConfig  `toml:"engine" json:"engine"`
+	Fees   rawFeeConfig     `toml:"fees" json:"fees"`
 	Stocks []rawStockConfig `toml:"stocks" json:"stocks"`
+}
+
+type rawFeeConfig struct {
+	CommissionPerShare string `toml:"commission_per_share" json:"commission_per_share"`
+	CommissionMin      string `toml:"commission_min" json:"commission_min"`
+	PlatformPerShare   string `toml:"platform_per_share" json:"platform_per_share"`
+	PlatformMin        string `toml:"platform_min" json:"platform_min"`
+	SettlementPerShare string `toml:"settlement_per_share" json:"settlement_per_share"`
+	SettlementMin      string `toml:"settlement_min" json:"settlement_min"`
+	SECRate            string `toml:"sec_rate" json:"sec_rate"`
+	FINRAPerShare      string `toml:"finra_per_share" json:"finra_per_share"`
 }
 
 type rawServerConfig struct {
@@ -189,6 +202,9 @@ func parseConfig(body []byte, absPath string) (*Config, error) {
 	if raw.Engine.AccessTokenAutoRefresh != nil {
 		cfg.Engine.AccessTokenAutoRefresh = *raw.Engine.AccessTokenAutoRefresh
 	}
+	if cfg.Fees, err = parseFeeConfig(raw.Fees); err != nil {
+		return nil, err
+	}
 
 	if len(raw.Stocks) == 0 {
 		return nil, fmt.Errorf("至少需要配置一只股票")
@@ -280,6 +296,19 @@ func (c *Config) Validate() error {
 	if c.Engine.MaxExposure.IsNegative() {
 		return fmt.Errorf("engine.max_exposure 不能小于 0")
 	}
+	for _, item := range []struct {
+		name  string
+		value decimal.Decimal
+	}{
+		{"commission_per_share", c.Fees.CommissionPerShare}, {"commission_min", c.Fees.CommissionMin},
+		{"platform_per_share", c.Fees.PlatformPerShare}, {"platform_min", c.Fees.PlatformMin},
+		{"settlement_per_share", c.Fees.SettlementPerShare}, {"settlement_min", c.Fees.SettlementMin},
+		{"sec_rate", c.Fees.SECRate}, {"finra_per_share", c.Fees.FINRAPerShare},
+	} {
+		if item.value.IsNegative() {
+			return fmt.Errorf("fees.%s 不能小于 0", item.name)
+		}
+	}
 	remarks := make(map[string]string, len(c.Stocks))
 	for _, stock := range c.Stocks {
 		if stock.MaxLots <= 0 {
@@ -318,6 +347,29 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func parseFeeConfig(raw rawFeeConfig) (FeeConfig, error) {
+	fees := defaultFeeConfig()
+	var err error
+	for _, item := range []struct {
+		name string
+		raw  string
+		dst  *decimal.Decimal
+	}{
+		{"commission_per_share", raw.CommissionPerShare, &fees.CommissionPerShare}, {"commission_min", raw.CommissionMin, &fees.CommissionMin},
+		{"platform_per_share", raw.PlatformPerShare, &fees.PlatformPerShare}, {"platform_min", raw.PlatformMin, &fees.PlatformMin},
+		{"settlement_per_share", raw.SettlementPerShare, &fees.SettlementPerShare}, {"settlement_min", raw.SettlementMin, &fees.SettlementMin},
+		{"sec_rate", raw.SECRate, &fees.SECRate}, {"finra_per_share", raw.FINRAPerShare, &fees.FINRAPerShare},
+	} {
+		if strings.TrimSpace(item.raw) == "" {
+			continue
+		}
+		if *item.dst, err = parseDecimal(item.raw, item.name); err != nil {
+			return fees, fmt.Errorf("fees.%w", err)
+		}
+	}
+	return fees, nil
 }
 
 func parseDurationOrDefault(raw string, fallback time.Duration) (time.Duration, error) {

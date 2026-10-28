@@ -20,6 +20,7 @@ const (
 
 type StrategyInput struct {
 	Config       StockConfig
+	Fees         FeeConfig
 	CurrentPrice decimal.Decimal
 	PositionQty  int64
 	AvailableQty int64
@@ -45,6 +46,7 @@ type StrategyPreview struct {
 	NextSellPrice     decimal.Decimal
 	NextSellReference decimal.Decimal
 	NextSellProfit    decimal.Decimal
+	NextSellFee       decimal.Decimal
 	HasNextSell       bool
 	NextSellReason    string
 }
@@ -155,13 +157,13 @@ func resolveSellWait(input StrategyInput, currentLots int64, canSellOne bool, la
 	}
 
 	baseTarget := calcUpTarget(*lastBuy, input.Config.SellPercent)
-	expectedProfit := input.CurrentPrice.Sub(*lastBuy).Mul(decimal.NewFromInt(input.Config.OrderQuantity))
+	expectedProfit := netProfit(input.Fees, *lastBuy, input.CurrentPrice, input.Config.OrderQuantity)
 	if expectedProfit.LessThan(input.Config.MinProfit) {
 		return &Decision{
 			TriggerPrice:   baseTarget,
 			ReferencePrice: *lastBuy,
 			ExpectedProfit: expectedProfit,
-			Reason:         fmt.Sprintf("预估盈利 %.2f 低于最低要求 %.2f，暂不卖出", expectedProfit.InexactFloat64(), input.Config.MinProfit.InexactFloat64()),
+			Reason:         fmt.Sprintf("预估净利 %.2f(已扣费)低于最低要求 %.2f，暂不卖出", expectedProfit.InexactFloat64(), input.Config.MinProfit.InexactFloat64()),
 		}
 	}
 
@@ -281,7 +283,8 @@ func PreviewStrategy(input StrategyInput) StrategyPreview {
 		preview.NextSellReference = *lastBuy
 		baseTarget := calcUpTarget(*lastBuy, input.Config.SellPercent)
 		preview.NextSellPrice = baseTarget
-		preview.NextSellProfit = input.CurrentPrice.Sub(*lastBuy).Mul(decimal.NewFromInt(input.Config.OrderQuantity))
+		preview.NextSellProfit = netProfit(input.Fees, *lastBuy, input.CurrentPrice, input.Config.OrderQuantity)
+		preview.NextSellFee = input.Fees.RoundTrip(*lastBuy, input.CurrentPrice, input.Config.OrderQuantity)
 		preview.HasNextSell = true
 		if input.State.SellArmed {
 			highest := decimalStringPtr(input.State.SellHighest)

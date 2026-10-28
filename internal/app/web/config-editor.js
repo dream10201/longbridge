@@ -11,8 +11,14 @@
     "engine.access_token_env_file": "凭证文件", "engine.trade_api_window": "限频窗口", "engine.trade_api_max_calls": "窗口内最大调用",
     "engine.trade_api_min_gap": "调用最小间隔", "engine.quote_request_timeout": "请求超时",
     "server.host": "监听地址", "server.port": "监听端口", "server.auth_secret": "面板密钥",
+    "fees.commission_per_share": "佣金 / 股", "fees.commission_min": "佣金每单最低", "fees.platform_per_share": "平台费 / 股", "fees.platform_min": "平台费每单最低",
+    "fees.settlement_per_share": "交收费 / 股", "fees.settlement_min": "交收费每单最低", "fees.sec_rate": "SEC 规费比例", "fees.finra_per_share": "FINRA 费 / 股",
     symbol: "代码", initial_price: "首次建仓价", sell_percent: "卖出阈值", trail_percent: "追踪幅度", buy_percent: "补仓阈值", min_profit: "最低盈利",
     use_margin: "允许融资", max_lots: "最大笔数", order_quantity: "每笔数量", remark: "订单备注", enabled: "启用",
+  };
+  const FEE_PRESETS = {
+    longbridge: { commission_per_share: "0", commission_min: "0", platform_per_share: "0.005", platform_min: "1", settlement_per_share: "0.003", settlement_min: "0.01", sec_rate: "0.0000051", finra_per_share: "0.000166" },
+    none: { commission_per_share: "0", commission_min: "0", platform_per_share: "0", platform_min: "0", settlement_per_share: "0", settlement_min: "0", sec_rate: "0", finra_per_share: "0" },
   };
   const STRATEGY_KEYS = ["initial_price", "sell_percent", "trail_percent", "buy_percent", "min_profit", "max_lots", "order_quantity"];
 
@@ -72,6 +78,21 @@
     return base ? "snap-" + base : "";
   }
 
+  // ---------- fees ----------
+  function estimateFee(fees, side, price, qty) {
+    if (!(qty > 0)) return 0;
+    const item = (per, min) => Math.max(num(per) * qty, num(min));
+    let total = item(fees.commission_per_share, fees.commission_min) + item(fees.platform_per_share, fees.platform_min) + item(fees.settlement_per_share, fees.settlement_min);
+    if (side === "sell") {
+      if (num(fees.sec_rate) > 0) total += Math.max(price * qty * num(fees.sec_rate), 0.01);
+      if (num(fees.finra_per_share) > 0) total += Math.min(num(fees.finra_per_share) * qty, 8.3);
+    }
+    return total;
+  }
+  function roundTripFee(fees, buyPrice, sellPrice, qty) {
+    return estimateFee(fees, "buy", buyPrice, qty) + estimateFee(fees, "sell", sellPrice, qty);
+  }
+
   // ---------- derived numbers ----------
   function stockDerived(stock) {
     const st = statusFor(normalizeSymbol(stock.symbol)) || {};
@@ -81,12 +102,15 @@
     const sell = num(stock.sell_percent), trail = num(stock.trail_percent), buy = num(stock.buy_percent), minProfit = num(stock.min_profit);
     const perLot = price * qty;
     const grossAtSell = perLot * sell / 100;
-    const effectiveSell = perLot > 0 ? Math.max(sell, minProfit / perLot * 100) : sell;
+    const fee = roundTripFee(state.draft.fees || {}, price, price * (1 + sell / 100), qty);
+    const netAtSell = grossAtSell - fee;
+    const feeRatio = grossAtSell > 0 ? fee / grossAtSell : (fee > 0 ? Infinity : 0);
+    const effectiveSell = perLot > 0 ? Math.max(sell, (minProfit + fee) / perLot * 100) : sell;
     const locked = ((1 + sell / 100) * (1 - trail / 100) - 1) * 100;
     const ladder = [];
     for (let n = 1; n < lots; n++) ladder.push(buy * fib(n + 2) / 2);
     const heldLots = qty > 0 ? Math.ceil((st.position_qty || 0) / qty) : 0;
-    return { st, price, livePrice: toNumber(st.price), qty, lots, sell, trail, buy, minProfit, perLot, full: perLot * lots, grossAtSell, effectiveSell, locked, ladder, heldLots };
+    return { st, price, livePrice: toNumber(st.price), qty, lots, sell, trail, buy, minProfit, perLot, full: perLot * lots, grossAtSell, fee, netAtSell, feeRatio, effectiveSell, locked, ladder, heldLots };
   }
   function immediateBuy(stock, d, before) {
     if (stock.enabled === false || d.livePrice === null || (d.st.position_qty || 0) > 0 || d.st.pending_order_id) return false;
@@ -119,7 +143,8 @@
       return String(value ?? "");
     };
 
-    for (const section of ["engine", "server"]) {
+    for (const key of Object.keys(draft.fees || {})) if (num(draft.fees[key]) < 0) errors.push((LABELS["fees." + key] || key) + " 不能为负");
+    for (const section of ["engine", "server", "fees"]) {
       for (const key of Object.keys(draft[section])) {
         const path = section + "." + key;
         if (String(draft[section][key]) !== String(orig[section][key])) change(LABELS[path] || path, fmtVal(path, orig[section][key]), fmtVal(path, draft[section][key]));
@@ -192,8 +217,9 @@
       if (before && String(stock.order_quantity) !== String(before.order_quantity) && position > 0) push("warn", name + ": 修改每笔数量后，现有 " + position + " 股会按新数量折算为 " + d.heldLots + " 笔，影响补仓阶梯与卖出判断。");
       if (before && before.enabled !== false && !enabled && (position > 0 || d.st.pending_order_id)) push("danger", name + ": 停用后程序不再管理其" + heldText(position, d.st.pending_order_id) + "，需要手动处理。");
       if (stock.use_margin && (!before || !before.use_margin)) push("warn", name + ": 开启融资买入会产生利息并放大亏损。");
-      if (enabled && d.perLot > 0 && d.effectiveSell > d.sell + 0.0001) push("info", name + ": 最低盈利 " + money(d.minProfit) + " 高于按阈值计算的单笔毛利 " + money(d.grossAtSell) + "，实际需上涨约 " + pct(d.effectiveSell) + " 才会卖出。");
-      if (enabled && d.sell > 0 && d.sell < 1) push("warn", name + ": 卖出阈值低于 1%，手续费可能吃掉利润。");
+      if (enabled && d.perLot > 0 && d.effectiveSell > d.sell + 0.0001) push("info", name + ": 最低盈利 " + money(d.minProfit) + " 高于到卖点的单笔净利 " + fmtNumber(d.netAtSell) + "，实际需上涨约 " + pct(d.effectiveSell) + " 才会卖出。");
+      if (enabled && d.grossAtSell > 0 && d.feeRatio >= 0.5) push("danger", name + ": 一买一卖费用约 " + fmtNumber(d.fee) + "，占到卖点毛利 " + fmtNumber(d.grossAtSell) + " 的 " + pct(d.feeRatio * 100) + "，大半利润付给了券商；请提高卖出阈值或加大每笔数量。");
+      else if (enabled && d.grossAtSell > 0 && d.feeRatio >= 0.2) push("warn", name + ": 一买一卖费用约 " + fmtNumber(d.fee) + "，占到卖点毛利的 " + pct(d.feeRatio * 100) + "，每单最低收费对小单影响明显。");
       if (enabled && d.buy > 0 && d.buy < 1) push("warn", name + ": 补仓阈值低于 1%，会频繁加仓迅速打满仓位。");
       if (enabled && d.lots > 0 && d.heldLots > d.lots) push("info", name + ": 当前已持有约 " + d.heldLots + " 笔，超过最大笔数 " + d.lots + "，将不再补仓直到卖出。");
     });
@@ -309,6 +335,21 @@
       '<div class="cfg-add"><button type="button" class="btn" data-action="add-stock">＋ 添加标的</button></div></section>';
   }
 
+  function renderFeesCard(cfg) {
+    const f = cfg.fees || {};
+    const fee = (key, label, help, unit) => fieldWrap("fees." + key, label, numberInput("fees." + key, f[key], { unit: unit || "USD", step: "0.001", min: 0 }), help);
+    return '<section class="cfg-card"><div class="cfg-card-head"><h3>交易费用</h3><span class="sub">用于把预估盈利和最低盈利换算成扣费后的净利</span></div>' +
+      '<div class="chips" style="margin-bottom:12px">' +
+      '<button type="button" class="chip" data-action="fee-preset" data-preset="longbridge">长桥美股 · 终身免佣</button>' +
+      '<button type="button" class="chip" data-action="fee-preset" data-preset="none">不计费用</button></div>' +
+      '<div class="cfg-grid">' +
+      fee("commission_per_share", "佣金 / 股", "终身免佣填 0。") + fee("commission_min", "佣金每单最低", "") +
+      fee("platform_per_share", "平台费 / 股", "") + fee("platform_min", "平台费每单最低", "小单通常按这个值收。") +
+      fee("settlement_per_share", "交收费 / 股", "") + fee("settlement_min", "交收费每单最低", "") +
+      fee("sec_rate", "SEC 规费比例", "卖出金额 × 比例，仅卖出。", "×") + fee("finra_per_share", "FINRA 费 / 股", "仅卖出，每单上限 8.30。") +
+      "</div><div class=\"field-hint\" data-hint=\"fees\"></div></section>";
+  }
+
   function renderEngineCard(cfg) {
     const e = cfg.engine;
     return '<details class="cfg-card"><summary>引擎参数 <span class="sub">轮询 / 挂单 / 令牌 / 限频</span></summary><div class="cfg-grid">' +
@@ -342,7 +383,8 @@
     if (state.loading) { body.innerHTML = '<div class="cfg-loading">正在读取配置…</div>'; return; }
     if (state.error) { body.innerHTML = '<div class="cfg-error">' + esc(state.error) + '</div><div class="cfg-add"><button type="button" class="btn" data-action="reload">重试</button></div>'; return; }
     const cfg = state.draft;
-    body.innerHTML = renderModeCard(cfg) + renderStocksCard(cfg) + renderEngineCard(cfg) + renderServerCard(cfg) +
+    const reloadError = (latestStatus || {}).config_reload_error;
+    body.innerHTML = (reloadError ? '<div class="issue danger">引擎未能应用当前配置文件，仍按旧配置运行：' + esc(reloadError) + "</div>" : "") + renderModeCard(cfg) + renderStocksCard(cfg) + renderFeesCard(cfg) + renderEngineCard(cfg) + renderServerCard(cfg) +
       '<section class="cfg-card"><div class="cfg-card-head"><h3>检查结果</h3></div><div class="cfg-issues" data-issues></div></section>';
     refreshDerived();
   }
@@ -417,19 +459,28 @@
       const lot = state.lotSizes[sym] || 0;
       setHint(p("order_quantity"), (lot > 0 && d.qty % lot !== 0 ? "必须是每手 " + lot + " 股的整数倍。" : "") + "单笔约 " + money(d.perLot), lot > 0 && d.qty % lot !== 0 ? "danger" : "");
       setHint(p("max_lots"), "满仓约 " + money(d.full) + (d.heldLots ? " · 当前约 " + d.heldLots + " 笔" : ""), d.heldLots > d.lots ? "info" : "");
-      setHint(p("sell_percent"), d.sell > 0 ? "买入价 × " + (1 + d.sell / 100).toFixed(4).replace(/0+$/, "") + " 进入卖出流程 · 单笔毛利约 " + money(d.grossAtSell) +
-        (d.effectiveSell > d.sell + 0.0001 ? "，受最低盈利约束实际需涨约 " + pct(d.effectiveSell) : "") : "必须大于 0", d.sell <= 0 ? "danger" : d.sell < 1 ? "warn" : d.effectiveSell > d.sell + 0.0001 ? "info" : "");
+      setHint(p("sell_percent"), d.sell > 0 ? "买入价 × " + (1 + d.sell / 100).toFixed(4).replace(/0+$/, "") + " 进入卖出流程 · 单笔毛利约 " + fmtNumber(d.grossAtSell) + "，扣费 " + fmtNumber(d.fee) + " 后净利约 " + fmtNumber(d.netAtSell) +
+        (d.grossAtSell > 0 && d.feeRatio >= 0.2 ? "，费用占毛利 " + pct(d.feeRatio * 100) : "") +
+        (d.effectiveSell > d.sell + 0.0001 ? "，受最低盈利约束实际需涨约 " + pct(d.effectiveSell) : "") : "必须大于 0",
+        d.sell <= 0 ? "danger" : d.feeRatio >= 0.5 ? "danger" : d.feeRatio >= 0.2 ? "warn" : d.effectiveSell > d.sell + 0.0001 ? "info" : "");
       setHint(p("trail_percent"), d.trail >= d.sell ? "必须小于卖出阈值 " + pct(d.sell) + "，否则可能亏损卖出" :
         d.trail > 0 ? "卖出至少锁定 +" + pct(d.locked) + "（卖点 " + pct(d.sell) + " 回撤 " + pct(d.trail) + "）· 买入需从低点反弹 " + pct(d.trail) : "必须大于 0", d.trail >= d.sell || d.trail <= 0 ? "danger" : "");
       setHint(p("buy_percent"), d.ladder.length
         ? '<span class="ladder">' + d.ladder.map((v, n) => "<span>第 " + (n + 1) + " 次补仓 −" + pct(v) + "</span>").join("") + "</span>"
         : (d.buy > 0 ? "最大笔数为 1 时不会补仓" : "必须大于 0"), d.buy <= 0 ? "danger" : d.buy < 1 ? "warn" : "");
-      setHint(p("min_profit"), d.perLot > 0 ? (d.minProfit > d.grossAtSell ? "高于按阈值计算的单笔毛利 " + money(d.grossAtSell) + "，实际需涨约 " + pct(d.effectiveSell) : "单笔到卖点的毛利约 " + money(d.grossAtSell) + "，满足要求") : "", d.minProfit > d.grossAtSell && d.perLot > 0 ? "info" : "ok");
+      setHint(p("min_profit"), d.perLot > 0 ? (d.minProfit > d.netAtSell ? "高于到卖点的单笔净利 " + fmtNumber(d.netAtSell) + "，实际需涨约 " + pct(d.effectiveSell) : "按扣费后净利判断，到卖点约 " + fmtNumber(d.netAtSell) + "，满足要求") : "", d.minProfit > d.netAtSell && d.perLot > 0 ? "info" : "ok");
       const remark = String(stock.remark || "").trim();
       setHint(p("remark"), enabled && !remark ? "启用的标的必须填写" : enabled && remarkCount.get(remark) > 1 ? "与其他启用标的重复" : "", "danger");
       setHint(p("symbol"), "");
     });
 
+    const sample = enabledStocks(cfg)[0];
+    if (sample) {
+      const sd = stockDerived(sample);
+      setHint("fees", "示例：" + normalizeSymbol(sample.symbol) + " 每笔 " + sd.qty + " 股，买入约 " + fmtNumber(estimateFee(cfg.fees || {}, "buy", sd.price, sd.qty)) + "，卖出约 " + fmtNumber(estimateFee(cfg.fees || {}, "sell", sd.price, sd.qty)) + "，一买一卖合计约 " + fmtNumber(sd.fee), "info");
+    }
+    const feePresetKey = Object.keys(FEE_PRESETS).find((key) => Object.entries(FEE_PRESETS[key]).every(([k, v]) => num((cfg.fees || {})[k]) === num(v)));
+    drawer.querySelectorAll('[data-action="fee-preset"]').forEach((chip) => chip.classList.toggle("active", chip.dataset.preset === feePresetKey));
     const issuesEl = drawer.querySelector("[data-issues]");
     if (issuesEl) {
       const items = result.errors.map((text) => '<div class="issue error">' + esc(text) + "</div>")
@@ -484,12 +535,16 @@
     const btn = event.target.closest("[data-action]");
     if (!btn) return;
     const action = btn.dataset.action;
-    if (action === "close" || action === "discard") { closeEditor(); return; }
+    if (action === "close" || action === "discard") { closeEditor(false); return; }
     if (action === "reload") { loadConfig(); return; }
     if (action === "save") { openConfirm(); return; }
     if (!state.draft) return;
     if (action === "set-mode") { setValue("engine.dry_run", btn.dataset.value !== "live"); return; }
     if (action === "chip") { setValue(btn.dataset.setPath, btn.dataset.setValue); return; }
+    if (action === "fee-preset") {
+      for (const [key, value] of Object.entries(FEE_PRESETS[btn.dataset.preset] || {})) setValue("fees." + key, value);
+      return;
+    }
     if (action === "step") {
       const input = drawer.querySelector('input[data-path="' + btn.dataset.path + '"]');
       const step = parseInt(input.dataset.stepSize, 10) || 1;
@@ -593,6 +648,7 @@
     cfg.server.port = parseInt(cfg.server.port, 10) || 0;
     cfg.engine.trade_api_max_calls = parseInt(cfg.engine.trade_api_max_calls, 10) || 0;
     cfg.engine.access_token_auto_refresh = cfg.engine.access_token_auto_refresh !== false;
+    cfg.fees = Object.fromEntries(Object.entries(cfg.fees || {}).map(([k, v]) => [k, String(v)]));
     cfg.stocks = cfg.stocks.map((s) => ({
       symbol: normalizeSymbol(s.symbol), initial_price: String(s.initial_price), sell_percent: String(s.sell_percent), trail_percent: String(s.trail_percent),
       buy_percent: String(s.buy_percent), min_profit: String(s.min_profit), use_margin: !!s.use_margin,
@@ -601,9 +657,28 @@
     return cfg;
   }
 
+  async function waitForApply(prevReloadedAt, prevErrorAt) {
+    const deadline = Date.now() + 90000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1000));
+      try {
+        const resp = await fetch(apiURL("status"), { cache: "no-store" });
+        if (!resp.ok) continue;
+        const status = await resp.json();
+        latestStatus = status;
+        if (status.config_reload_error && (status.config_reload_error_at || "") !== prevErrorAt) return { error: status.config_reload_error };
+        if (status.config_reloaded_at && status.config_reloaded_at !== prevReloadedAt) return { ok: true };
+      } catch (_) {
+        // 下一轮再试
+      }
+    }
+    return { timeout: true };
+  }
+
   async function save(confirmLive) {
     state.saving = true;
     refreshDerived();
+    const before = latestStatus || {};
     try {
       const resp = await fetch(apiURL("config"), {
         method: "PUT", headers: { "Content-Type": "application/json" }, cache: "no-store",
@@ -611,9 +686,26 @@
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok || !data.ok) throw new Error(data.error || ("HTTP " + resp.status));
-      toast("配置已保存并应用" + (data.warnings && data.warnings.length ? "，警告：" + data.warnings.join("；") : ""), "ok");
-      closeEditor();
-      if (typeof pollStatus === "function") setTimeout(pollStatus, 800);
+      const warnText = data.warnings && data.warnings.length ? "，警告：" + data.warnings.join("；") : "";
+      if (!data.changed) {
+        toast("配置没有变化", "");
+        closeEditor(true);
+        return;
+      }
+      toast("已写入配置文件，等待引擎应用…", "", 90000);
+      const outcome = await waitForApply(before.config_reloaded_at || "", before.config_reload_error_at || "");
+      state.saving = false;
+      if (outcome.ok) {
+        toast("配置已保存并应用" + warnText, "ok");
+        closeEditor(true);
+      } else if (outcome.error) {
+        toast("配置已写入文件，但引擎拒绝应用，仍按旧配置运行：" + outcome.error, "danger", 12000);
+        loadConfig();
+      } else {
+        toast("配置已写入文件，引擎尚未应用（可能正在轮询中），稍后可在面板底部查看热加载时间", "", 10000);
+        closeEditor(true);
+      }
+      if (typeof pollStatus === "function") setTimeout(pollStatus, 500);
     } catch (err) {
       toast("保存失败：" + (err && err.message ? err.message : err), "danger", 8000);
     } finally {
@@ -660,7 +752,7 @@
     backdrop = document.createElement("div");
     backdrop.className = "cfg-backdrop";
     backdrop.hidden = true;
-    backdrop.addEventListener("click", closeEditor);
+    backdrop.addEventListener("click", () => closeEditor(false));
     drawer = document.createElement("aside");
     drawer.className = "cfg-drawer";
     drawer.hidden = true;
@@ -687,19 +779,23 @@
     loadConfig();
   }
 
-  function closeEditor() {
+  function closeEditor(force) {
     if (!drawer) return;
-    if (state.draft && state.original && JSON.stringify(state.draft) !== JSON.stringify(state.original) && !state.saving) {
+    if (!force && state.draft && state.original && JSON.stringify(state.draft) !== JSON.stringify(state.original) && !state.saving) {
       if (!window.confirm("有未保存的修改，确定放弃？")) return;
     }
     state.open = false;
     state.draft = null;
+    state.saving = false;
+    const saveBtn = drawer.querySelector('[data-action="save"]');
+    saveBtn.textContent = "保存并应用";
+    saveBtn.disabled = true;
     backdrop.hidden = true;
     drawer.hidden = true;
     document.body.style.overflow = "";
   }
 
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && state.open && !document.querySelector(".cfg-modal-backdrop")) closeEditor(); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && state.open && !document.querySelector(".cfg-modal-backdrop")) closeEditor(false); });
   const openBtn = document.getElementById("open-config");
   if (openBtn) openBtn.addEventListener("click", openEditor);
   if (window.location.hash === "#config") openEditor();

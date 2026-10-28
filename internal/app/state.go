@@ -43,6 +43,8 @@ type SymbolState struct {
 	LastError            string             `json:"last_error,omitempty"`
 	LastOrderStatus      string             `json:"last_order_status,omitempty"`
 	LastOrderMsg         string             `json:"last_order_msg,omitempty"`
+	LastFillFee          string             `json:"last_fill_fee,omitempty"`
+	TotalFees            string             `json:"total_fees,omitempty"`
 	Pending              *PendingOrderState `json:"pending,omitempty"`
 }
 

@@ -93,6 +93,9 @@ type SymbolSnapshot struct {
 	BaseSellPrice          string        `json:"base_sell_price,omitempty"`
 	NextSellRef            string        `json:"next_sell_ref,omitempty"`
 	NextSellProfit         string        `json:"next_sell_profit,omitempty"`
+	NextSellFee            string        `json:"next_sell_fee,omitempty"`
+	LastFillFee            string        `json:"last_fill_fee,omitempty"`
+	TotalFees              string        `json:"total_fees,omitempty"`
 	NextSellReason         string        `json:"next_sell_reason,omitempty"`
 	SellTrailArmed         bool          `json:"sell_trail_armed,omitempty"`
 	SellTrailHighest       string        `json:"sell_trail_highest,omitempty"`
@@ -107,19 +110,21 @@ type CapacityTag struct {
 }
 
 type DashboardSnapshot struct {
-	StartedAt        time.Time                `json:"started_at"`
-	LastUpdatedAt    time.Time                `json:"last_updated_at"`
-	ConfigPath       string                   `json:"config_path,omitempty"`
-	ConfigReloadedAt *time.Time               `json:"config_reloaded_at,omitempty"`
-	DryRun           bool                     `json:"dry_run"`
-	ListenAddress    string                   `json:"listen_address"`
-	AccessToken      AccessTokenStatus        `json:"access_token"`
-	Market           MarketClock              `json:"market"`
-	Exposure         ExposureSnapshot         `json:"exposure"`
-	Summary          DashboardSummary         `json:"summary"`
-	AccountBalances  []AccountBalanceSnapshot `json:"account_balances,omitempty"`
-	AccountError     string                   `json:"account_error,omitempty"`
-	Symbols          []SymbolSnapshot         `json:"symbols"`
+	StartedAt           time.Time                `json:"started_at"`
+	LastUpdatedAt       time.Time                `json:"last_updated_at"`
+	ConfigPath          string                   `json:"config_path,omitempty"`
+	ConfigReloadedAt    *time.Time               `json:"config_reloaded_at,omitempty"`
+	ConfigReloadError   string                   `json:"config_reload_error,omitempty"`
+	ConfigReloadErrorAt *time.Time               `json:"config_reload_error_at,omitempty"`
+	DryRun              bool                     `json:"dry_run"`
+	ListenAddress       string                   `json:"listen_address"`
+	AccessToken         AccessTokenStatus        `json:"access_token"`
+	Market              MarketClock              `json:"market"`
+	Exposure            ExposureSnapshot         `json:"exposure"`
+	Summary             DashboardSummary         `json:"summary"`
+	AccountBalances     []AccountBalanceSnapshot `json:"account_balances,omitempty"`
+	AccountError        string                   `json:"account_error,omitempty"`
+	Symbols             []SymbolSnapshot         `json:"symbols"`
 }
 
 type ExposureSnapshot struct {
@@ -174,8 +179,8 @@ type Engine struct {
 	staticMu  sync.RWMutex
 	static    map[string]*lbquote.StaticInfo
 
-	// reloadRequests 由 Web 配置接口投递,在 Run 循环的 goroutine 内立即重新加载配置并回传结果。
-	reloadRequests chan chan error
+	// reloadRequests 由 Web 配置接口投递,唤醒 Run 循环立即重新加载配置;结果写入状态快照。
+	reloadRequests chan struct{}
 
 	marketMu         sync.RWMutex
 	sessionTemplates []sessionTemplate
@@ -246,7 +251,7 @@ func NewEngine(cfg *Config, logger *log.Logger) (*Engine, error) {
 		cfg:              cfg,
 		configPath:       cfg.FilePath,
 		logger:           logger,
-		reloadRequests:   make(chan chan error),
+		reloadRequests:   make(chan struct{}, 1),
 		client:           client,
 		auth:             authManager,
 		state:            stateStore,
@@ -370,11 +375,11 @@ func (e *Engine) Run(ctx context.Context) error {
 				<-timer.C
 			}
 			return ctx.Err()
-		case reply := <-e.reloadRequests:
+		case <-e.reloadRequests:
 			if !timer.Stop() {
 				<-timer.C
 			}
-			reply <- e.reloadConfig(ctx, true)
+			e.applyConfigReload(ctx, true)
 		case <-sessionAuthFailure:
 			if !timer.Stop() {
 				<-timer.C
@@ -647,6 +652,8 @@ func (e *Engine) processSymbol(cc *cycleContext, stock StockConfig) SymbolSnapsh
 	if position.HasCost {
 		snapshot.CostPrice = position.CostPrice.StringFixed(4)
 	}
+	snapshot.LastFillFee = state.LastFillFee
+	snapshot.TotalFees = state.TotalFees
 	if state.Pending != nil {
 		e.fillPendingSnapshot(&snapshot, state)
 		snapshot.Decision = pendingOrderDecisionText(state)
@@ -669,6 +676,7 @@ func (e *Engine) processSymbol(cc *cycleContext, stock StockConfig) SymbolSnapsh
 
 	input := StrategyInput{
 		Config:       stock,
+		Fees:         e.fees(),
 		CurrentPrice: price,
 		PositionQty:  position.Quantity,
 		AvailableQty: position.Available,
@@ -791,6 +799,7 @@ func fillSellPreview(snapshot *SymbolSnapshot, stock StockConfig, state SymbolSt
 	snapshot.BaseSellPrice = baseTarget.StringFixed(4)
 	snapshot.NextSellRef = preview.NextSellReference.StringFixed(4)
 	snapshot.NextSellProfit = preview.NextSellProfit.StringFixed(4)
+	snapshot.NextSellFee = preview.NextSellFee.StringFixed(4)
 	snapshot.NextSellReason = preview.NextSellReason
 	snapshot.SellTrailPercent = stock.TrailPercent.StringFixed(2)
 	if state.SellArmed {
@@ -863,22 +872,14 @@ func (e *Engine) rebuildClientAfterSessionAuthFailure() error {
 	return nil
 }
 
-// ApplyConfig 让引擎立即重新加载配置文件,并返回加载结果;引擎未在运行时随 ctx 超时返回。
-func (e *Engine) ApplyConfig(ctx context.Context) error {
+// RequestReload 唤醒 Run 循环尽快重新加载配置;不阻塞,循环正忙时会在本轮结束后处理。
+func (e *Engine) RequestReload() {
 	if e == nil || e.reloadRequests == nil {
-		return fmt.Errorf("引擎未运行")
-	}
-	reply := make(chan error, 1)
-	select {
-	case e.reloadRequests <- reply:
-	case <-ctx.Done():
-		return fmt.Errorf("等待引擎空闲超时: %w", ctx.Err())
+		return
 	}
 	select {
-	case err := <-reply:
-		return err
-	case <-ctx.Done():
-		return fmt.Errorf("等待引擎应用配置超时: %w", ctx.Err())
+	case e.reloadRequests <- struct{}{}:
+	default:
 	}
 }
 
@@ -896,9 +897,21 @@ func (e *Engine) LotSize(symbol string) int32 {
 }
 
 func (e *Engine) reloadConfigIfChanged(ctx context.Context) {
-	if err := e.reloadConfig(ctx, false); err != nil {
-		e.logger.Printf("%v", err)
+	e.applyConfigReload(ctx, false)
+}
+
+// applyConfigReload 执行重载并把失败原因写入状态快照,面板据此提示"配置未生效"。
+func (e *Engine) applyConfigReload(ctx context.Context, force bool) {
+	err := e.reloadConfig(ctx, force)
+	if err == nil {
+		return
 	}
+	e.logger.Printf("%v", err)
+	now := time.Now().UTC()
+	e.statusMu.Lock()
+	e.status.ConfigReloadError = err.Error()
+	e.status.ConfigReloadErrorAt = &now
+	e.statusMu.Unlock()
 }
 
 // reloadConfig 在文件变化(或 force)时重新加载配置;返回的错误均附带"继续使用当前配置"语义。
@@ -939,6 +952,8 @@ func (e *Engine) reloadConfig(ctx context.Context, force bool) error {
 	e.status.ConfigPath = nextCfg.FilePath
 	reloadedAt := time.Now().UTC()
 	e.status.ConfigReloadedAt = &reloadedAt
+	e.status.ConfigReloadError = ""
+	e.status.ConfigReloadErrorAt = nil
 	e.statusMu.Unlock()
 	e.logger.Printf("检测到配置文件变化，已热加载: %s", nextCfg.FilePath)
 	for _, warning := range nextCfg.Warnings {

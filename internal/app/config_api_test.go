@@ -39,15 +39,7 @@ func newConfigAPIEngine(t *testing.T) (*Engine, string) {
 	if err := os.WriteFile(path, []byte(configAPITestTOML), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return &Engine{configPath: path, reloadRequests: make(chan chan error)}, path
-}
-
-func serveReloads(engine *Engine, result error) {
-	go func() {
-		for reply := range engine.reloadRequests {
-			reply <- result
-		}
-	}()
+	return &Engine{configPath: path, reloadRequests: make(chan struct{}, 1)}, path
 }
 
 func TestConfigAPIGetReturnsEffectiveValues(t *testing.T) {
@@ -99,15 +91,19 @@ func loadRaw(t *testing.T, handler http.Handler) rawConfig {
 
 func TestConfigAPIPutWritesAndApplies(t *testing.T) {
 	engine, path := newConfigAPIEngine(t)
-	serveReloads(engine, nil)
 	handler := NewHTTPHandler(engine, ServerConfig{})
 
 	raw := loadRaw(t, handler)
 	raw.Stocks[0].SellPercent = "2.5"
 	raw.Engine.MaxExposure = "5000"
 	rec := putConfig(t, handler, configUpdateRequest{Config: raw})
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-engine.reloadRequests:
+	default:
+		t.Fatal("expected a reload request to be queued")
 	}
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -121,23 +117,21 @@ func TestConfigAPIPutWritesAndApplies(t *testing.T) {
 	}
 }
 
-func TestConfigAPIPutRejectsAndRollsBack(t *testing.T) {
+func TestConfigAPIPutRejectsWithoutWriting(t *testing.T) {
 	tests := []struct {
 		name    string
 		mutate  func(raw *rawConfig, req *configUpdateRequest)
-		reload  error
 		wantMsg string
 	}{
-		{"演练切真实需确认", func(raw *rawConfig, _ *configUpdateRequest) { raw.Engine.DryRun = false }, nil, "明确确认"},
-		{"追踪回撤不能超过卖出阈值", func(raw *rawConfig, _ *configUpdateRequest) { raw.Stocks[0].TrailPercent = "2" }, nil, "trail_percent"},
-		{"轮询不能过快", func(raw *rawConfig, _ *configUpdateRequest) { raw.Engine.PollInterval = "200ms" }, nil, "poll_interval"},
-		{"基础校验仍生效", func(raw *rawConfig, _ *configUpdateRequest) { raw.Stocks[0].Remark = "" }, nil, "remark"},
-		{"引擎拒绝时回滚文件", func(raw *rawConfig, _ *configUpdateRequest) { raw.Stocks[0].OrderQuantity = 7 }, os.ErrInvalid, "已回滚"},
+		{"演练切真实需确认", func(raw *rawConfig, _ *configUpdateRequest) { raw.Engine.DryRun = false }, "明确确认"},
+		{"追踪回撤不能超过卖出阈值", func(raw *rawConfig, _ *configUpdateRequest) { raw.Stocks[0].TrailPercent = "2" }, "trail_percent"},
+		{"轮询不能过快", func(raw *rawConfig, _ *configUpdateRequest) { raw.Engine.PollInterval = "200ms" }, "poll_interval"},
+		{"基础校验仍生效", func(raw *rawConfig, _ *configUpdateRequest) { raw.Stocks[0].Remark = "" }, "remark"},
+		{"费用不能为负", func(raw *rawConfig, _ *configUpdateRequest) { raw.Fees.PlatformMin = "-1" }, "fees.platform_min"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			engine, path := newConfigAPIEngine(t)
-			serveReloads(engine, tc.reload)
 			handler := NewHTTPHandler(engine, ServerConfig{})
 			raw := loadRaw(t, handler)
 			req := configUpdateRequest{Config: raw}
@@ -162,12 +156,11 @@ func TestConfigAPIPutRejectsAndRollsBack(t *testing.T) {
 
 func TestConfigAPIPutLiveWithConfirm(t *testing.T) {
 	engine, path := newConfigAPIEngine(t)
-	serveReloads(engine, nil)
 	handler := NewHTTPHandler(engine, ServerConfig{})
 	raw := loadRaw(t, handler)
 	raw.Engine.DryRun = false
 	rec := putConfig(t, handler, configUpdateRequest{Config: raw, ConfirmLive: true})
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
 	cfg, err := LoadConfig(path)
