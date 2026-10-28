@@ -1,4 +1,5 @@
 .cfg-backdrop { position: fixed; inset: 0; background: rgba(8, 12, 18, 0.45); z-index: 40; }
+.cfg-backdrop[hidden], .cfg-drawer[hidden], .toast[hidden] { display: none; }
 .cfg-drawer {
   position: fixed; top: 0; right: 0; bottom: 0; width: min(820px, 100vw); z-index: 41;
   display: flex; flex-direction: column; background: var(--bg); border-left: 1px solid var(--line);
