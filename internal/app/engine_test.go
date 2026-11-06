@@ -873,6 +873,50 @@ func TestProcessSymbolKeepsLadderForDisabledStock(t *testing.T) {
 	}
 }
 
+func TestProcessSymbolClearsErrorWhenNoOrderTriggered(t *testing.T) {
+	store, err := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stock := StockConfig{
+		Symbol:        "AMD.US",
+		InitialPrice:  mustDecimal(t, "520"),
+		SellPercent:   mustDecimal(t, "7"),
+		TrailPercent:  mustDecimal(t, "1.5"),
+		BuyPercent:    mustDecimal(t, "5"),
+		MinProfit:     mustDecimal(t, "30"),
+		MaxLots:       4,
+		OrderQuantity: 3,
+		Enabled:       true,
+	}
+	store.Update(stock.Symbol, func(s *SymbolState) {
+		s.BuyLadder = []string{"465.09"}
+		s.LastBuyPrice = "465.09"
+		s.LastAction = ActionBuy
+		s.ConfigSignature = strategyConfigSignature(stock)
+		s.LastError = buildBuyCapacityError(false, 3, 1, 0)
+	})
+	engine := &Engine{cfg: &Config{Stocks: []StockConfig{stock}}, state: store}
+	price := mustDecimal(t, "460")
+	cost := mustDecimal(t, "465.09")
+	cc := &cycleContext{
+		ctx:         context.Background(),
+		marketClock: MarketClock{Open: true, CurrentPhase: MarketPhaseNormal},
+		quotes:      map[string]*lbquote.SecurityQuote{stock.Symbol: {LastDone: &price}},
+		positions: map[string]PositionSnapshot{
+			stock.Symbol: {Quantity: 3, Available: 3, CostPrice: cost, HasCost: true},
+		},
+	}
+
+	snapshot := engine.processSymbol(cc, stock)
+	if snapshot.LastError != "" {
+		t.Fatalf("expected snapshot error cleared, got %q (decision %q)", snapshot.LastError, snapshot.Decision)
+	}
+	if got := store.Get(stock.Symbol).LastError; got != "" {
+		t.Fatalf("expected persisted error cleared, got %q", got)
+	}
+}
+
 func TestNormalizeStateWithPositionDelaysLadderRebuild(t *testing.T) {
 	store, err := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {

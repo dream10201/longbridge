@@ -712,9 +712,13 @@ func (e *Engine) processSymbol(cc *cycleContext, stock StockConfig) SymbolSnapsh
 
 	e.state.Update(stock.Symbol, func(s *SymbolState) {
 		s.LastDecision = decision.Reason
+		if decision.Action == ActionNone {
+			s.LastError = ""
+		}
 	})
 
 	if decision.Action == ActionNone {
+		snapshot.LastError = ""
 		return snapshot
 	}
 
